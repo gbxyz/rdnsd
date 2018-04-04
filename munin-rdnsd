@@ -37,7 +37,11 @@ if ($servers && $domains) {
 	die("Both Servers and Domains are present in config (or were provided as arguments): please choose one or the other");
 
 } elsif ($servers) {
-	@servers = split(/\s*,\s*/, $servers);
+	 if (ref($servers) eq 'ARRAY') {
+                @servers = @{$servers};
+        } else {
+                @servers = split(/\s*,\s*/, $servers);
+        }
 
 } else {
 	my $resolver = Net::DNS::Resolver->new;
