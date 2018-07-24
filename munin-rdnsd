@@ -34,12 +34,12 @@ my $domains	= $config->param('Domains');
 
 my ($warning, $critical);
 if ('rate' eq $mode) {
-	$warning  = $config->param('WarningRate')  || 0.95;
-	$critical = $config->param('CriticalRate') || 0.90;
+	$warning  = sprintf('%f:1', $config->param('WarningRate')  || 0.95);
+	$critical = sprintf('%f:1', $config->param('CriticalRate') || 0.90);
 
 } else {
-	$warning  = $config->param('WarningTime')  || ('tcp' eq $proto ? 500  : 1000);
-	$critical = $config->param('CriticalTime') || ('tcp' eq $proto ? 1500 : 3000);
+	$warning  = sprintf('0:%f', $config->param('WarningTime')  || ('tcp' eq $proto ? 500  : 1000));
+	$critical = sprintf('0:%f', $config->param('CriticalTime') || ('tcp' eq $proto ? 1500 : 3000));
 
 }
 
@@ -85,8 +85,8 @@ if ($ARGV[0] eq 'config') {
 		$name =~ s/\./_/g;
 		$name =~ s/\-/_/g;
 		printf("%s.label %s\n", $name, $server);
-		printf("%s.warning %f\n", $name, $warning);
-		printf("%s.critical %f\n", $name, $critical);
+		printf("%s.warning %s\n", $name, $warning);
+		printf("%s.critical %s\n", $name, $critical);
 	}
 
 	exit;
