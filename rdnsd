@@ -1,5 +1,5 @@
 #!/usr/bin/perl
-# Copyright 2013 CentralNic Ltd. This program is free software; you can
+# Copyright 2018 CentralNic Ltd. This program is free software; you can
 # redistribute it and/or modify it under the same terms as Perl itself.
 use Config::Simple;
 use Getopt::Long;
@@ -27,6 +27,7 @@ GetOptions(
 	'statsfile=s',
 	'domains=s',
 	'percentile=i',
+	'optimistic',
 	'help',
 );
 
@@ -41,17 +42,18 @@ $config->read($opts->{'config'}) if ($opts->{'config'});
 #
 # pick config settings - command line overrides config file overrides defaults:
 #
-my $debug	= $opts->{'debug'}	|| $config->param('Debug') eq 'true'	|| undef;
-my $loop	= $opts->{'loop'}	|| $config->param('Loop')		|| 3;
-my $pidfile	= $opts->{'pidfile'}	|| $config->param('PidFile')		|| '/var/run/rdnsd.pid';
-my $proto	= $opts->{'proto'}	|| $config->param('Protocol')		|| 'udp';
-my $question	= $opts->{'question'}	|| $config->param('Question')		|| '. A IN';
-my $timeout	= $opts->{'timeout'}	|| $config->param('Timeout')		|| 1;
-my $recurse	= $opts->{'recurse'}	|| $config->param('Recurse') eq 'true'	|| undef;
-my $statsfile	= $opts->{'statsfile'}	|| $config->param('StatsFile')		|| '/var/run/rdnsd.log';
-my $servers	= $opts->{'servers'}	|| $config->param('Servers')		|| undef;
-my $domains	= $opts->{'domains'}	|| $config->param('Domains')		|| undef;
-my $percentile	= $opts->{'percentile'}	|| $config->param('Percentile')		|| undef;
+my $debug	= $opts->{'debug'}	|| $config->param('Debug') eq 'true'		|| undef;
+my $loop	= $opts->{'loop'}	|| $config->param('Loop')			|| 3;
+my $pidfile	= $opts->{'pidfile'}	|| $config->param('PidFile')			|| '/var/run/rdnsd.pid';
+my $proto	= $opts->{'proto'}	|| $config->param('Protocol')			|| 'udp';
+my $question	= $opts->{'question'}	|| $config->param('Question')			|| '. A IN';
+my $timeout	= $opts->{'timeout'}	|| $config->param('Timeout')			|| 1;
+my $recurse	= $opts->{'recurse'}	|| $config->param('Recurse') eq 'true'		|| undef;
+my $statsfile	= $opts->{'statsfile'}	|| $config->param('StatsFile')			|| '/var/run/rdnsd.log';
+my $servers	= $opts->{'servers'}	|| $config->param('Servers')			|| undef;
+my $domains	= $opts->{'domains'}	|| $config->param('Domains')			|| undef;
+my $percentile	= $opts->{'percentile'}	|| $config->param('Percentile')			|| undef;
+my $optimistic	= $opts->{'optimistic'}	|| $config->param('Optimistic') eq 'true'	|| undef;
 
 debug('starting');
 
@@ -89,7 +91,7 @@ my $stats = {};
 #
 my @question = split(/\s+/, $question);
 my $question = Net::DNS::Packet->new(@question);
-$question->header->rd($recurse ? 1 : 0);
+$question->header->rd($recurse);
 
 #
 # configure resolver
@@ -132,14 +134,32 @@ if (!open(PIDFILE, '>'.$pidfile)) {
 # configure signal handler to write stats to log file when we get the USR1
 # signal:
 #
-$SIG{USR1} = sub { eval {
+$SIG{'USR1'} = sub { eval {
 	if (!open(STATSFILE, '>'.$statsfile)) {
 		print STDERR "Error opening '$statsfile': $!\n" if ($debug);
 		exit 1;
 	}
 
 	foreach my $ns (sort(@servers)) {
-		next if ($stats->{$ns}->{'count'} < 1); # avoid divide by zero
+		if ($stats->{$ns}->{'count'} < 1) {
+			$stats->{$ns}->{'time'} = 0;
+
+			if ($optimistic) {
+				#
+				# optimistic, treat server as up
+				#
+				$stats->{$ns}->{'count'} = 1;
+				$stats->{$ns}->{'success'} = 1;
+
+			} else {
+				#
+				# pessimistic, treat server as down
+				#
+				$stats->{$ns}->{'count'} = 1;
+				$stats->{$ns}->{'success'} = 0;
+
+			}
+		}
 
 		my $line = sprintf('%s %0.2f %d',
 			$ns,
@@ -167,9 +187,9 @@ $SIG{USR1} = sub { eval {
 	$stats = {};
 }};
 
-# we check each server every $loop seconds so $interval is the sleep time
+# we want to check each server every $loop seconds so $interval is the sleep time
 # between each request:
-my $interval = ($loop/scalar(@servers));
+my $interval = ($loop / scalar(@servers));
 
 #
 # loop forever:
@@ -313,6 +333,7 @@ The format is very simple. Here is an example:
 	Question	. A IN
 	Servers		ns1.example.com,ns2.example.net
 	Domains		example.com
+	Optimistic	false
 
 The directives are explained below. As noted above, if the equivalent
 command line argument is passed, it will override the value in the
@@ -390,6 +411,15 @@ returned.
 
 The SRV record is checked once at start-up, so if the list of hosts
 changes, you will need to restart rdnsd.
+
+=item Optimistic (true|false)
+
+Default: false
+
+This parameter controls what happens when rdnsd outputs statistics but
+finds a server in its list that it has not yet had time to send a
+query to. If its value is true, then the server will be reported as up;
+if false, it will be reported as down.
 
 =back
 
