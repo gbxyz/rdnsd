@@ -92,9 +92,15 @@ if ($ARGV[0] eq 'config') {
 	exit;
 }
 
-# don't signal the daemon if the stats file is less than 60s old:
-# otherwise the quality of the statistics will be poor
-if (time() - (stat($statsfile))[9] > 60) {
+#
+# to ensure good statistics, we calculate the maximum acceptable age of the
+# log file, based on the number of servers, the timeout, and a reasonable
+# number of data points:
+#
+my $timeout = $config->param('Timeout') || 1;
+my $maxage = scalar(@servers) * $timeout * 3;
+
+if (time() - (stat($statsfile))[9] > $maxage) {
 	die("Error opening '$pidfile': $!") if (!open(PIDFILE, $pidfile));
 	chomp(my $pid = <PIDFILE>);
 	close(PIDFILE);
