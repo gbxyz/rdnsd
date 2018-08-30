@@ -1,21 +1,54 @@
 #!/usr/bin/perl
 # Copyright 2013 CentralNic Ltd. This program is free software; you can
 # redistribute it and/or modify it under the same terms as Perl itself.
-use Net::DNS;
 use Config::Simple;
+use File::Basename qw(basename);
+use Net::DNS;
 use strict;
 
-# to use this plugin, symlink it to /etc/munin/plugins/rdnds_(rate|time)_(udp|tcp)
-# you'll need to multiple symlinks if you want to monitor rate and time or UDP
-# and TCP
+#
+# to use this plugin, symlink it to /etc/munin/plugins/rdnsd_(rate|time)_(udp|tcp)[_(ipv4|ipv6)]
+#
+# you'll need to multiple symlinks if you want to monitor multiple metrics, for example:
+#
+#	/etc/munin/plugins/rdnsd_rate_udp
+#	/etc/munin/plugins/rdnsd_rate_tcp
+#	/etc/munin/plugins/rdnsd_time_udp
+#	/etc/munin/plugins/rdnsd_time_udp_ipv4 (etc)
+#
 
-my (undef, $mode, $proto) = split(/_/, $0, 4);
+my (undef, $mode, $proto, $family) = split(/_/, basename($0), 4);
 
-# this plugin assumes that you have a config file here:
-my @files = (
-	"/etc/rdnsd/rdnsd_$proto.conf",
-	"/etc/rdnsd/rdnsd.conf",
-);
+die("invalid mode '$mode'") if ($mode !~ /^(rate|time)$/);
+
+#
+# construct a list of possible config files based on protocol/family
+#
+my @files;
+if ($family) {
+	#
+	# explicit IP version specified
+	#
+	if ($family !~ /^ipv(4|6)$/) {
+		die("invalid family '$family'");
+
+	} else {
+		@files = (
+			sprintf('/etc/rdnsd/rdnsd_%s_%s.conf', $proto, $family),
+			sprintf('/etc/rdnsd/rdnsd_%s.conf', $family),
+		);
+	}
+
+} else {
+	@files = (
+		sprintf('/etc/rdnsd/rdnsd_%s.conf', $proto),
+		'/etc/rdnsd/rdnsd.conf',
+	);
+}
+
+#
+# look for a config file:
+#
 my $config;
 foreach my $file (@files) {
 	if (-e $file) {
@@ -24,13 +57,15 @@ foreach my $file (@files) {
 	}
 }
 
-die("unhandled mode '$mode'") if ($mode ne 'rate' && $mode ne 'time');
+die("Cannot find configuration file") unless ($config);
 
 my $pidfile	= $config->param('PidFile');
 my $statsfile	= $config->param('StatsFile');
-
 my $servers	= $config->param('Servers');
 my $domains	= $config->param('Domains');
+my $family	= $config->param('AddressFamily');
+my $update	= $config->param('UpdateInterval');
+my $timeout	= $config->param('Timeout') || 1;
 
 my ($warning, $critical);
 if ('rate' eq $mode) {
@@ -45,13 +80,15 @@ if ('rate' eq $mode) {
 
 my @servers;
 if ($servers && $domains) {
-	die("Both Servers and Domains are present in config (or were provided as arguments): please choose one or the other");
+	die("Both 'Servers' and 'Domains' are present in the config file: please choose one or the other");
 
 } elsif ($servers) {
-	 if (ref($servers) eq 'ARRAY') {
+	if (ref($servers) eq 'ARRAY') {
                 @servers = @{$servers};
+
         } else {
                 @servers = split(/\s*,\s*/, $servers);
+
         }
 
 } else {
@@ -72,13 +109,18 @@ die("no servers found") if (scalar(@servers) < 1);
 if ($ARGV[0] eq 'config') {
 	print "graph_category DNS\n";
 
-	if ($mode eq 'time') {
-		printf("graph_title Query Response Time %s\ngraph_vlabel Milliseconds\n", uc($proto));
+	my $fmt;
+	if ('time' eq $mode) {
+		$fmt =	"graph_title Query Response Time (%s)\n".
+			"graph_vlabel Response Time (ms)\n";
 
-	} elsif ($mode eq 'rate') {
-		printf("graph_title Query Response Rate (%s)\ngraph_vlabel Response Rate\ngraph_args --upper-limit 1 -l 0\n", uc($proto));
+	} elsif ('rate' eq $mode) {
+		$fmt =	"graph_title Query Response Rate (%s)\n".
+			"graph_vlabel Response Rate\ngraph_args --upper-limit 1 -l 0\n";
 
 	}
+
+	printf($fmt, ($family ? sprintf('IPv%d', substr($family, 3), uc($proto)) : uc($proto)));
 
 	foreach my $server (@servers) {
 		my $name = $server;
@@ -92,22 +134,31 @@ if ($ARGV[0] eq 'config') {
 	exit;
 }
 
-#
-# to ensure good statistics, we calculate the maximum acceptable age of the
-# log file, based on the number of servers, the timeout, and a reasonable
-# number of data points:
-#
-my $timeout = $config->param('Timeout') || 1;
-my $maxage = scalar(@servers) * $timeout * 3;
+if (!$update) {
+	#
+	# no UpdateInterval is defined in the configuration, so we need to send
+	# the USR1 signal to rdnsd.
+	#
+	# to ensure good statistics, we calculate the maximum acceptable age of the
+	# log file, based on the number of servers, the timeout, and a reasonable
+	# number of data points.
+	#
+	# if you have a lot of servers, you probably want to configure
+	# UpdateInterval to ensure reliable stats.
+	#
+	my $maxage = scalar(@servers) * $timeout * 3;
 
-if (time() - (stat($statsfile))[9] > $maxage) {
-	die("Error opening '$pidfile': $!") if (!open(PIDFILE, $pidfile));
-	chomp(my $pid = <PIDFILE>);
-	close(PIDFILE);
+	if (time() - (stat($statsfile))[9] > $maxage) {
+		die("Error opening '$pidfile': $!") if (!open(PIDFILE, $pidfile));
+		chomp(my $pid = <PIDFILE>);
+		close(PIDFILE);
 
-	die("No processes signalled") if (kill('USR1', $pid) < 1);
+		die("No processes signalled") if (kill('USR1', $pid) < 1);
 
-	sleep(1);
+		# now we need to sleep to allow rdnsd to complete its current
+		# loop and update the stats file:
+		sleep(1 + $maxage);
+	}
 }
 
 die("Error opening '$statsfile': $!") if (!open(FILE, $statsfile));
