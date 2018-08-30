@@ -496,7 +496,7 @@ given percentile. See L<STATISTICS FILE FORMAT> for further information.
 
 Specifies whether to prefer IPv4 or IPv6 when talking to nameservers, if
 the servers are identified by name rather than address (or when loaded
-from SRC records). If not defined, the default behaviour is to prefer
+from SRV records). If not defined, the default behaviour is to prefer
 IPv6.
 
 =item * C<Protocol (udp|tcp)>
