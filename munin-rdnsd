@@ -63,7 +63,6 @@ my $pidfile	= $config->param('PidFile');
 my $statsfile	= $config->param('StatsFile');
 my $servers	= $config->param('Servers');
 my $domains	= $config->param('Domains');
-my $family	= $config->param('AddressFamily');
 my $update	= $config->param('UpdateInterval');
 my $timeout	= $config->param('Timeout') || 1;
 
@@ -120,16 +119,7 @@ if ($ARGV[0] eq 'config') {
 
 	}
 
-	printf(
-		$fmt,
-		(
-			$family
-			?
-			sprintf('IPv%d', substr($family, 3))
-			:
-			uc($proto)
-		)
-	);
+	printf($fmt, ($family ? sprintf('IPv%d', substr($family, 3)) : uc($proto)));
 
 	foreach my $server (@servers) {
 		my $name = $server;
