@@ -120,7 +120,16 @@ if ($ARGV[0] eq 'config') {
 
 	}
 
-	printf($fmt, ($family ? sprintf('IPv%d', substr($family, 3), uc($proto)) : uc($proto)));
+	printf(
+		$fmt,
+		(
+			$family
+			?
+			sprintf('IPv%d', substr($family, 3))
+			:
+			uc($proto)
+		)
+	);
 
 	foreach my $server (@servers) {
 		my $name = $server;
