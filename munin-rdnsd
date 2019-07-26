@@ -59,12 +59,14 @@ foreach my $file (@files) {
 
 die("Cannot find configuration file") unless ($config);
 
-my $pidfile	= $config->param('PidFile');
-my $statsfile	= $config->param('StatsFile');
-my $servers	= $config->param('Servers');
-my $domains	= $config->param('Domains');
-my $update	= $config->param('UpdateInterval');
-my $timeout	= $config->param('Timeout') || 1;
+my $pidfile		= $config->param('PidFile');
+my $statsfile		= $config->param('StatsFile');
+my $servers		= $config->param('Servers');
+my $domains		= $config->param('Domains');
+my $update		= $config->param('UpdateInterval');
+my $timeout		= $config->param('Timeout') || 1;
+my $multithreaded	= $config->param('MultiThreaded');
+my $loop		= $config->param('Loop');
 
 my ($warning, $critical);
 if ('rate' eq $mode) {
@@ -139,13 +141,13 @@ if (!$update) {
 	# the USR1 signal to rdnsd.
 	#
 	# to ensure good statistics, we calculate the maximum acceptable age of the
-	# log file, based on the number of servers, the timeout, and a reasonable
-	# number of data points.
+	# log file, based on whether rdnsd is running in multithreaded mode, the
+	# number of servers, the timeout, and a reasonable number of data points (3).
 	#
 	# if you have a lot of servers, you probably want to configure
 	# UpdateInterval to ensure reliable stats.
 	#
-	my $maxage = scalar(@servers) * $timeout * 3;
+	my $maxage = 3 * ($multithreaded ? $loop : scalar(@servers) * $loop);
 
 	if (time() - (stat($statsfile))[9] > $maxage) {
 		die("Error opening '$pidfile': $!") if (!open(PIDFILE, $pidfile));
