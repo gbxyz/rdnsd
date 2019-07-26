@@ -2,6 +2,7 @@
 # Copyright 2018 CentralNic Ltd. This program is free software; you can
 # redistribute it and/or modify it under the same terms as Perl itself.
 use Config::Simple;
+use DBI;
 use Getopt::Long;
 use Net::DNS;
 use POSIX qw(setsid strftime floor);
@@ -33,7 +34,8 @@ GetOptions(
 	'optimistic',
 	'update=i',
 	'help',
-	'threads',
+	'multithreaded',
+	'database=s',
 );
 
 pod2usage('-verbose' => 99, '-sections' => 'USAGE|OPTIONS') if ($opts->{'help'});
@@ -57,7 +59,8 @@ my $domains;
 my $percentile;
 my $optimistic;
 my $update;
-my $threads;
+my $multithreaded;
+my $database;
 
 load_config();
 
@@ -77,6 +80,8 @@ my $refresh;
 my $need_update;
 
 my $cache = {};
+
+my ($dbh, $sth);
 
 update_serverlist();
 
@@ -124,11 +129,10 @@ $SIG{'HUP'} = sub {
 	debug('received SIGHUP');
 	$reload = 1;
 	$refresh = 0;
-	$cache = {};
 };
 
 #
-# configure signal handler to write stats to log file when we get the USR1
+# configure signal handler to write stats to log file when if get the USR1
 # signal:
 #
 $SIG{'USR1'} = sub {
@@ -150,7 +154,7 @@ sub main_loop {
 
 	my $t0 = time();
 
-	if ($threads) {
+	if ($multithreaded) {
 		do_async_loop();
 
 	} else {
@@ -159,6 +163,8 @@ sub main_loop {
 	}
 
 	my $dt = (time() - $t0);
+	debug('main_loop() completed in %dms', 1000 * $dt);
+
 	sleep($loop-$dt) if ($dt < $loop);
 
 	update_stats() if ($need_update || $update && time() - $updated >= $update);
@@ -217,6 +223,8 @@ sub do_sync_loop {
 
 sub time_query {
 	my @servers = @_;
+
+	return undef if (scalar(@servers) < 1);
 
 	my $resolver = Net::DNS::Resolver->new;
 	$resolver->usevc('tcp' eq $proto);
@@ -282,8 +290,9 @@ sub load_config {
 	$domains	= $opts->{'domains'}	|| $config->param('Domains')			|| undef;
 	$percentile	= $opts->{'percentile'}	|| $config->param('Percentile')			|| undef;
 	$optimistic	= $opts->{'optimistic'}	|| $config->param('Optimistic') eq 'true'	|| undef;
-	$update		= $opts->{'update'}	|| $config->param('UpdateInterval')		|| undef;
-	$threads	= $opts->{'threads'}	|| $config->param('MultiThreaded') eq 'true'	|| undef;
+	$update		= $opts->{'update'}	|| $config->param('UpdateInterval')		|| 290;
+	$multithreaded	= $opts->{'threads'}	|| $config->param('MultiThreaded') eq 'true'	|| undef;
+	$database	= $opts->{'database'}	|| $config->param('Database')			|| undef;
 
 	#
 	# configure question packet
@@ -346,7 +355,36 @@ sub update_stats {
 		$updated = time() - 30;
 
 	} else {
+		if ($database) {
+			if (!$dbh || $dbh->ping) {
+				$dbh = DBI->connect('dbi:SQLite:dbname='.$database, '', '', { 'RaiseError' => 1, 'AutoCommit' => 0 });
+				$dbh->do('CREATE TABLE IF NOT EXISTS rdnsd (
+					id INTEGER NOT NULL PRIMARY KEY,
+					date DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+					host VARCHAR(255) NOT NULL,
+					rate DECIMAL(3,2) NOT NULL,
+					time INTEGER NOT NULL,
+					percentile_time INTEGER DEFAULT NULL
+				)');
+				$dbh->do('CREATE INDEX IF NOT EXISTS host_idx ON rdnsd(host)');
+				$dbh->do('CREATE INDEX IF NOT EXISTS date_idx ON rdnsd(date)');
+
+				$sth = $dbh->prepare('INSERT INTO rdnsd (host, rate, time, percentile_time) VALUES (?, ?, ?, ?)');
+
+				debug('initialised database in %s', $database);
+			}
+
+		} elsif ($dbh) {
+			$dbh->disconnect;
+			undef($dbh);
+			undef($sth);
+
+		}
+
 		foreach my $ns (sort(@servers)) {
+
+			my ($rate, $time, $percentile_time);
+
 			if ($stats->{$ns}->{'count'} < 1) {
 				$stats->{$ns}->{'time'} = 0;
 
@@ -367,11 +405,10 @@ sub update_stats {
 				}
 			}
 
-			my $line = sprintf('%s %0.2f %d',
-				$ns,
-				($stats->{$ns}->{'success'} / $stats->{$ns}->{'count'}),
-				1000 * ($stats->{$ns}->{'time'} / $stats->{$ns}->{'count'}),
-			);
+			$rate = ($stats->{$ns}->{'success'} / $stats->{$ns}->{'count'});
+			$time = floor(1000 * $stats->{$ns}->{'time'} / $stats->{$ns}->{'count'});
+
+			my $line = sprintf('%s %0.2f %d', $ns, $rate, $time);
 
 			if ($percentile) {
 				# sort in ascending order
@@ -380,14 +417,20 @@ sub update_stats {
 				# find the position which corresponds to the percentile
 				my $pos = floor(scalar(@times) * $percentile / 100) - 1;
 
-				# append the time in milliseconds
-				$line .= sprintf(' %d', 1000 * $times[$pos]);
+				$percentile_time = floor(1000 * $times[$pos]);
+
+				$line .= sprintf(' %d', $percentile_time);
 			}
 
 			print STATSFILE $line."\n";
+
+			$sth->execute($ns, $rate, $time, $percentile_time) if ($sth);
 		}
 
 		debug("wrote stats to '%s'", $statsfile);
+
+		$dbh->commit if ($dbh);
+		debug("updated '%s'", $database) if ($database);
 		close(STATSFILE);
 
 		$updated = time();
@@ -399,13 +442,24 @@ sub update_stats {
 }
 
 sub resolve {
-	my $name = lc(shift).'.';
+	my $name = lc(shift);
 	my $type = shift || 'A';
 
 	if (!defined($cache->{$name}->{$type})) {
-		my $resolver = Net::DNS::Resolver->new;
-		my $answer = $resolver->query($name, $type);
-		$cache->{$name}->{$type} = [ map { $_->address } $answer->answer ];
+		if (($name =~ /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/ && 'A' eq $type) || ($name =~ /^[0-9a-f:]+$/i && 'AAAA' eq $type)) {
+			$cache->{$name}->{$type} = [$name];
+
+		} else {
+			my $resolver = Net::DNS::Resolver->new;
+			my $answer = $resolver->query("$name.", $type);
+			if ($answer) {
+				$cache->{$name}->{$type} = [ map { $_->address } $answer->answer ];
+
+			} else {
+				debug("unable to resolve '%s'", $name);
+
+			}
+		}
 	}
 
 	return @{$cache->{$name}->{$type}};
@@ -502,6 +556,14 @@ Enable Optimistic mode.
 
 Specify automatic stats update interval.
 
+=item * C<--multithreaded>
+
+Run in multithreaded mode.
+
+=item * C<--database=FILE>
+
+Specify SQLite database.
+
 =back
 
 =head1 CONFIGURATION FILE
@@ -522,6 +584,8 @@ The format is very simple. Here is an example:
 	Domains		example.com
 	Optimistic	false
 	UpdateInterval	300
+	MultiThreaded	true
+	Database	/var/run/rdnsd/rdnsd.db
 
 The directives are explained below. As noted above, if the equivalent
 command line argument is passed, it will override the value in the
@@ -618,16 +682,51 @@ if false, it will be reported as down.
 
 =item * C<UpdateInterval TIME>
 
+Default: 290
+
+This parameter tells C<rdnsd> to automatically update the statistics file
+every C<TIME> seconds.
+
+=item * C<Multithreaded (true|false)>
+
+Default: false
+
+This parameter enables multithreaded mode. In this mode, C<rdnsd> will
+probe servers in parallel inside separate threads. Otherwise, it probes
+them in serial, one after the other. Use of multithreaded mode resolves
+some issues with monitoring large numbers of servers, at the cost of
+higher CPU load.
+
+=item * C<Database FILE>
+
 Default: none
 
-This paramter tells C<rdnsd> to update the statistics file every C<TIME>
-seconds. If set, C<rdnds> will ignore the C<USR1> signal (see below).
+If set, C<rdnsd> will create an SQLite database at the specified file
+and write statistics to it. The database will contain a single table
+named C<rdnsd>, which will contain the following columns:
+
+=over
+
+=item * C<id> - unique row ID
+
+=item * C<date> - date/time the row was inserted
+
+=item * C<host> - hostname
+
+=item * C<rate> - response rate as a decimal (0.00 - 1.00)
+
+=item * C<time> - average RTT in milliseconds
+
+=item * C<percentil_time> - average RTT in milliseconds at the
+configured percentile.
+
+=back
 
 =back
 
 =head1 OBTAINING STATISTICS
 
-If C<UpdateInterval> is not set, you can get statistics out of C<rdnsd>
+If you unset C<UpdateInterval>, you can get statistics out of C<rdnsd>
 by sending it the C<USR1> signal:
 
 	$ kill -USR1 `cat /path/to/pid/file`
@@ -641,8 +740,11 @@ C<N x M> seconds, otherwise C<rdnsd> will not have enough time to test
 every server. You probably want to send the signal about every C<3 x N x M>
 seconds if you want reliable statistics.
 
-Note that C<rdnsd> will not immediately update the file upon receiving
-the C<USR1> signal: you may need to wait for the current loop iteration
+If <rdnsd> is running in multithreaded mode, then you can send the C<USR1>
+signal much more often (once every C<Loop x Timeout> seconds).
+
+Note that C<rdnsd> will not I<immediately> update the file upon receiving
+the C<USR1> signal. You may need to wait for the current loop iteration
 to complete before the stats file is updated.
 
 =head1 RELOADING CONFIGURATION
