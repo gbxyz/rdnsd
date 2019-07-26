@@ -8,6 +8,7 @@ use POSIX qw(setsid strftime floor);
 use Pod::Usage;
 use Sys::Syslog qw(:standard :macros);
 use Time::HiRes qw(time sleep);
+use threads;
 use strict;
 
 #
@@ -32,11 +33,11 @@ GetOptions(
 	'optimistic',
 	'update=i',
 	'help',
+	'threads',
 );
 
 pod2usage('-verbose' => 99, '-sections' => 'USAGE|OPTIONS') if ($opts->{'help'});
 
-my $resolver = Net::DNS::Resolver->new;
 my $qpacket;
 
 #
@@ -56,6 +57,7 @@ my $domains;
 my $percentile;
 my $optimistic;
 my $update;
+my $threads;
 
 load_config();
 
@@ -73,6 +75,8 @@ my @servers;
 my $reload;
 my $refresh;
 my $need_update;
+
+my $cache = {};
 
 update_serverlist();
 
@@ -120,6 +124,7 @@ $SIG{'HUP'} = sub {
 	debug('received SIGHUP');
 	$reload = 1;
 	$refresh = 0;
+	$cache = {};
 };
 
 #
@@ -143,39 +148,64 @@ sub main_loop {
 	update_serverlist() if ($refresh <= time());
 	load_config() if ($reload);
 
+	my $t0 = time();
+
+	if ($threads) {
+		do_async_loop();
+
+	} else {
+		do_sync_loop();
+
+	}
+
+	my $dt = (time() - $t0);
+	sleep($loop-$dt) if ($dt < $loop);
+
+	update_stats() if ($need_update || $update && time() - $updated >= $update);
+}
+
+sub do_async_loop {
+	my %threads;
+	foreach my $ns (sort(@servers)) {
+		$threads{$ns} = threads->create(\&time_query, resolve($ns));
+	}
+
+	foreach my $ns (sort(@servers)) {
+		$stats->{$ns}->{'count'}++;
+
+		my $dt = $threads{$ns}->join;
+
+		if (!$dt) {
+			$stats->{$ns}->{'time'} += $timeout;
+
+		} else {
+			$stats->{$ns}->{'time'} += $dt;
+			$stats->{$ns}->{'success'}++;
+			push(@{$stats->{$ns}->{'times'}}, $dt);
+
+		}
+	}
+}
+
+sub do_sync_loop {
 	my %times;
 	my %sockets;
 
 	foreach my $ns (sort(@servers)) {
 		eval {
-			$resolver->nameservers($ns);
-
-			my $result;
-
-			my $t0 = time();
-			$result = $resolver->send($qpacket);
-			my $dt = (time() - $t0);
-
-			#
-			# record stats
-			#
 			$stats->{$ns}->{'count'}++;
-			$stats->{$ns}->{'time'} += $dt;
-			if (!$result) {
-				debug($resolver->errorstring);
+
+			my $dt = time_query(resolve($ns));
+
+			if (!$dt) {
+				$stats->{$ns}->{'time'} += $timeout;
 
 			} else {
+				$stats->{$ns}->{'time'} += $dt;
 				$stats->{$ns}->{'success'}++;
 				push(@{$stats->{$ns}->{'times'}}, $dt);
 
 			}
-
-			#
-			# we want to check each server every $loop seconds so $interval
-			# is the sleep time between each request:
-			#
-			my $interval = ($loop / scalar(@servers));
-			sleep($interval-$dt) unless ($interval-$dt <= 0);
 		};
 
 		if ($@) {
@@ -183,8 +213,39 @@ sub main_loop {
 			debug(sprintf('error: %s', $@));
 		}
 	}
+}
 
-	update_stats() if ($need_update || $update && time() - $updated >= $update);
+sub time_query {
+	my @servers = @_;
+
+	my $resolver = Net::DNS::Resolver->new;
+	$resolver->usevc('tcp' eq $proto);
+	$resolver->udp_timeout($timeout);
+	$resolver->tcp_timeout($timeout);
+	$resolver->persistent_udp(0);
+	$resolver->persistent_tcp(0);
+	$resolver->force_v4(4 == $family);
+	$resolver->force_v6(6 == $family);
+
+	$resolver->nameservers(@servers);
+
+	my $result;
+
+	my $t0 = time();
+
+	eval {
+		$result = $resolver->send($qpacket);
+	};
+
+	my $dt = (time() - $t0);
+
+	if (!$result) {
+		return undef;
+
+	} else {
+		return $dt;
+
+	}
 }
 
 sub debug {
@@ -222,6 +283,7 @@ sub load_config {
 	$percentile	= $opts->{'percentile'}	|| $config->param('Percentile')			|| undef;
 	$optimistic	= $opts->{'optimistic'}	|| $config->param('Optimistic') eq 'true'	|| undef;
 	$update		= $opts->{'update'}	|| $config->param('UpdateInterval')		|| undef;
+	$threads	= $opts->{'threads'}	|| $config->param('MultiThreaded') eq 'true'	|| undef;
 
 	#
 	# configure question packet
@@ -229,17 +291,6 @@ sub load_config {
 	my @question = split(/\s+/, $question);
 	$qpacket = Net::DNS::Packet->new(@question);
 	$qpacket->header->rd($recurse);
-
-	#
-	# configure resolver
-	#
-	$resolver->usevc('tcp' eq $proto);
-	$resolver->udp_timeout($timeout);
-	$resolver->tcp_timeout($timeout);
-	$resolver->persistent_udp(0);
-	$resolver->persistent_tcp(0);
-	$resolver->force_v4(4 == $family);
-	$resolver->force_v6(6 == $family);
 
 	$reload = undef;
 }
@@ -255,7 +306,6 @@ sub update_serverlist {
 		@servers = ();
 
 		my $resolver = Net::DNS::Resolver->new;
-		$resolver->nameservers('8.8.8.8');
 
 		#
 		# start with a high value
@@ -346,6 +396,19 @@ sub update_stats {
 
 		$stats = {};
 	}
+}
+
+sub resolve {
+	my $name = lc(shift).'.';
+	my $type = shift || 'A';
+
+	if (!defined($cache->{$name}->{$type})) {
+		my $resolver = Net::DNS::Resolver->new;
+		my $answer = $resolver->query($name, $type);
+		$cache->{$name}->{$type} = [ map { $_->address } $answer->answer ];
+	}
+
+	return @{$cache->{$name}->{$type}};
 }
 
 __END__
