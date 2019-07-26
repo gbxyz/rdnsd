@@ -83,6 +83,14 @@ example of how this can be achieved.
 
     Specify automatic stats update interval.
 
+- `--multithreaded`
+
+    Run in multithreaded mode.
+
+- `--database=FILE`
+
+    Specify SQLite database.
+
 # CONFIGURATION FILE
 
 The easiest way to configure `rdnsd` is to provide a configuration file.
@@ -101,6 +109,8 @@ The format is very simple. Here is an example:
         Domains         example.com
         Optimistic      false
         UpdateInterval  300
+        MultiThreaded   true
+        Database        /var/run/rdnsd/rdnsd.db
 
 The directives are explained below. As noted above, if the equivalent
 command line argument is passed, it will override the value in the
@@ -136,7 +146,7 @@ configuration file.
 
     Specifies whether to prefer IPv4 or IPv6 when talking to nameservers, if
     the servers are identified by name rather than address (or when loaded
-    from SRC records). If not defined, the default behaviour is to prefer
+    from SRV records). If not defined, the default behaviour is to prefer
     IPv6.
 
 - `Protocol (udp|tcp)`
@@ -195,14 +205,40 @@ configuration file.
 
 - `UpdateInterval TIME`
 
+    Default: 290
+
+    This parameter tells `rdnsd` to automatically update the statistics file
+    every `TIME` seconds.
+
+- `Multithreaded (true|false)`
+
+    Default: false
+
+    This parameter enables multithreaded mode. In this mode, `rdnsd` will
+    probe servers in parallel inside separate threads. Otherwise, it probes
+    them in serial, one after the other. Use of multithreaded mode resolves
+    some issues with monitoring large numbers of servers, at the cost of
+    higher CPU load.
+
+- `Database FILE`
+
     Default: none
 
-    This paramter tells `rdnsd` to update the statistics file every `TIME`
-    seconds. If set, `rdnds` will ignore the `USR1` signal (see below).
+    If set, `rdnsd` will create an SQLite database at the specified file
+    and write statistics to it. The database will contain a single table
+    named `rdnsd`, which will contain the following columns:
+
+    - `id` - unique row ID
+    - `date` - date/time the row was inserted
+    - `host` - hostname
+    - `rate` - response rate as a decimal (0.00 - 1.00)
+    - `time` - average RTT in milliseconds
+    - `percentil_time` - average RTT in milliseconds at the
+    configured percentile.
 
 # OBTAINING STATISTICS
 
-If `UpdateInterval` is not set, you can get statistics out of `rdnsd`
+If you unset `UpdateInterval`, you can get statistics out of `rdnsd`
 by sending it the `USR1` signal:
 
         $ kill -USR1 `cat /path/to/pid/file`
@@ -216,8 +252,11 @@ be careful not to send the USR1 signal to `rdnsd` more often than every
 every server. You probably want to send the signal about every `3 x N x M`
 seconds if you want reliable statistics.
 
-Note that `rdnsd` will not immediately update the file upon receiving
-the `USR1` signal: you may need to wait for the current loop iteration
+If &lt;rdnsd> is running in multithreaded mode, then you can send the `USR1`
+signal much more often (once every `Loop x Timeout` seconds).
+
+Note that `rdnsd` will not _immediately_ update the file upon receiving
+the `USR1` signal. You may need to wait for the current loop iteration
 to complete before the stats file is updated.
 
 # RELOADING CONFIGURATION
