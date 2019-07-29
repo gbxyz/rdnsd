@@ -97,8 +97,10 @@ The easiest way to configure `rdnsd` is to provide a configuration file.
 The format is very simple. Here is an example:
 
         Debug           false
-        PidFile         /var/run/rdnsd.pid
-        StatsFile       /var/run/rdnsd.log
+        MultiThreaded   true
+        PidFile         /var/run/rdnsd/rdnsd.pid
+        Database        /var/run/rdnsd/rdnsd.db
+        StatsFile       /var/run/rdnsd/rdnsd.log
         Percentile      95
         AddressFamily   4
         Protocol        udp
@@ -109,8 +111,6 @@ The format is very simple. Here is an example:
         Domains         example.com
         Optimistic      false
         UpdateInterval  300
-        MultiThreaded   true
-        Database        /var/run/rdnsd/rdnsd.db
 
 The directives are explained below. As noted above, if the equivalent
 command line argument is passed, it will override the value in the
@@ -126,13 +126,13 @@ configuration file.
 
 - `PidFile /path/to/pid/file`
 
-    Default: var/run/rdnsd.pid
+    Default: /var/run/rdnsd/rdnsd.pid
 
     The file where `rdnsd` will write its pid.
 
 - `StatsFile /path/to/stats/file`
 
-    Default: /var/run/rdnsd.log
+    Default: /var/run/rdnsd/rdnsd.log
 
     The file where `rdnsd` will write statistics to when signalled. See
     ["OBTAINING STATISTICS"](#obtaining-statistics) for further information.
@@ -147,13 +147,13 @@ configuration file.
     Specifies whether to prefer IPv4 or IPv6 when talking to nameservers, if
     the servers are identified by name rather than address (or when loaded
     from SRV records). If not defined, the default behaviour is to prefer
-    IPv6.
+    IPv4.
 
 - `Protocol (udp|tcp)`
 
     Default: udp
 
-    Specify the transport protocol to use.
+    Specify the transport protocol (UDP or TCP) to use.
 
 - `Loop SECONDS`
 
@@ -231,20 +231,32 @@ configuration file.
     - `id` - unique row ID
     - `date` - date/time the row was inserted
     - `host` - hostname
+    - `family` - IP version (4 or 6)
+    - `proto` - transport protocol (UDP or TCP)
     - `rate` - response rate as a decimal (0.00 - 1.00)
     - `time` - average RTT in milliseconds
-    - `percentil_time` - average RTT in milliseconds at the
+    - `percentile_time` - average RTT in milliseconds at the
     configured percentile.
+
+# RELOADING CONFIGURATION
+
+`rdnsd` will reload its configuration if you send it a `SIGHUP`:
+
+        $ kill -HUP `cat /path/to/pid/file`
+
+Arguments originally specified on the command line will always override
+new options added to the configuration file.
 
 # OBTAINING STATISTICS
 
-If you unset `UpdateInterval`, you can get statistics out of `rdnsd`
-by sending it the `USR1` signal:
+Every `UpdateInterval` seconds, `rdnsd` will write stats to the file
+specified by `StatsFile`, and, if set, the SQLite database specified by
+`Database`.
+
+If `UpdateInterval` is unset, automatic updates will not occur, so to
+get statistics out of `rdnsd`, you must sending it a `USR1` signal:
 
         $ kill -USR1 `cat /path/to/pid/file`
-
-This will cause `rdnsd` to dump its current data to the statistics
-file.
 
 **NOTE:** if you have `N` servers and a `Loop` value of `M`, you must
 be careful not to send the USR1 signal to `rdnsd` more often than every
@@ -256,14 +268,8 @@ If &lt;rdnsd> is running in multithreaded mode, then you can send the `USR1`
 signal much more often (once every `Loop x Timeout` seconds).
 
 Note that `rdnsd` will not _immediately_ update the file upon receiving
-the `USR1` signal. You may need to wait for the current loop iteration
-to complete before the stats file is updated.
-
-# RELOADING CONFIGURATION
-
-`rdnsd` will reload its configuration if you send it a `SIGHUP`:
-
-        $ kill -HUP `cat /path/to/pid/file`
+the `USR1` signal. You may need to wait up to `Loop` seconds for the
+current loop iteration to complete before the stats file is updated.
 
 ## STATISTICS FILE FORMAT
 

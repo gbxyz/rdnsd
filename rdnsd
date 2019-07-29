@@ -279,13 +279,13 @@ sub load_config {
 	#
 	$debug		= $opts->{'debug'}	|| $config->param('Debug') eq 'true'		|| undef;
 	$loop		= $opts->{'loop'}	|| $config->param('Loop')			|| 3;
-	$pidfile	= $opts->{'pidfile'}	|| $config->param('PidFile')			|| '/var/run/rdnsd.pid';
-	$family		= $opts->{'family'}	|| $config->param('AddressFamily')		|| undef;
+	$pidfile	= $opts->{'pidfile'}	|| $config->param('PidFile')			|| '/var/run/rdnsd/rdnsd.pid';
+	$family		= $opts->{'family'}	|| $config->param('AddressFamily')		|| 4;
 	$proto		= $opts->{'proto'}	|| $config->param('Protocol')			|| 'udp';
 	$question	= $opts->{'question'}	|| $config->param('Question')			|| '. A IN';
 	$timeout	= $opts->{'timeout'}	|| $config->param('Timeout')			|| 1;
 	$recurse	= $opts->{'recurse'}	|| $config->param('Recurse') eq 'true'		|| undef;
-	$statsfile	= $opts->{'statsfile'}	|| $config->param('StatsFile')			|| '/var/run/rdnsd.log';
+	$statsfile	= $opts->{'statsfile'}	|| $config->param('StatsFile')			|| '/var/run/rdnsd/rdnsd.log';
 	$servers	= $opts->{'servers'}	|| $config->param('Servers')			|| undef;
 	$domains	= $opts->{'domains'}	|| $config->param('Domains')			|| undef;
 	$percentile	= $opts->{'percentile'}	|| $config->param('Percentile')			|| undef;
@@ -358,18 +358,22 @@ sub update_stats {
 		if ($database) {
 			if (!$dbh || $dbh->ping) {
 				$dbh = DBI->connect('dbi:SQLite:dbname='.$database, '', '', { 'RaiseError' => 1, 'AutoCommit' => 0 });
-				$dbh->do('CREATE TABLE IF NOT EXISTS rdnsd (
+				$dbh->do("CREATE TABLE IF NOT EXISTS rdnsd (
 					id INTEGER NOT NULL PRIMARY KEY,
 					date DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 					host VARCHAR(255) NOT NULL,
+					family INTEGER NOT NULL DEFAULT 4,
+					proto CHAR(3) NOT NULL DEFAULT 'udp',
 					rate DECIMAL(3,2) NOT NULL,
 					time INTEGER NOT NULL,
 					percentile_time INTEGER DEFAULT NULL
-				)');
+				)");
 				$dbh->do('CREATE INDEX IF NOT EXISTS host_idx ON rdnsd(host)');
 				$dbh->do('CREATE INDEX IF NOT EXISTS date_idx ON rdnsd(date)');
+				$dbh->do('CREATE INDEX IF NOT EXISTS family_idx ON rdnsd(family)');
+				$dbh->do('CREATE INDEX IF NOT EXISTS proto_idx ON rdnsd(proto)');
 
-				$sth = $dbh->prepare('INSERT INTO rdnsd (host, rate, time, percentile_time) VALUES (?, ?, ?, ?)');
+				$sth = $dbh->prepare('INSERT INTO rdnsd (host, family, proto, rate, time, percentile_time) VALUES (?, ?, ?, ?, ?, ?)');
 
 				debug('initialised database in %s', $database);
 			}
@@ -424,7 +428,7 @@ sub update_stats {
 
 			print STATSFILE $line."\n";
 
-			$sth->execute($ns, $rate, $time, $percentile_time) if ($sth);
+			$sth->execute($ns, $family, $proto, $rate, $time, $percentile_time) if ($sth);
 		}
 
 		debug("wrote stats to '%s'", $statsfile);
@@ -572,8 +576,10 @@ The easiest way to configure C<rdnsd> is to provide a configuration file.
 The format is very simple. Here is an example:
 
 	Debug		false
-	PidFile		/var/run/rdnsd.pid
-	StatsFile	/var/run/rdnsd.log
+	MultiThreaded	true
+	PidFile		/var/run/rdnsd/rdnsd.pid
+	Database	/var/run/rdnsd/rdnsd.db
+	StatsFile	/var/run/rdnsd/rdnsd.log
 	Percentile	95
 	AddressFamily	4
 	Protocol	udp
@@ -584,8 +590,6 @@ The format is very simple. Here is an example:
 	Domains		example.com
 	Optimistic	false
 	UpdateInterval	300
-	MultiThreaded	true
-	Database	/var/run/rdnsd/rdnsd.db
 
 The directives are explained below. As noted above, if the equivalent
 command line argument is passed, it will override the value in the
@@ -603,13 +607,13 @@ with debugging information.
 
 =item * C<PidFile /path/to/pid/file>
 
-Default: var/run/rdnsd.pid
+Default: /var/run/rdnsd/rdnsd.pid
 
 The file where C<rdnsd> will write its pid.
 
 =item * C<StatsFile /path/to/stats/file>
 
-Default: /var/run/rdnsd.log
+Default: /var/run/rdnsd/rdnsd.log
 
 The file where C<rdnsd> will write statistics to when signalled. See
 L<OBTAINING STATISTICS> for further information.
@@ -624,13 +628,13 @@ given percentile. See L<STATISTICS FILE FORMAT> for further information.
 Specifies whether to prefer IPv4 or IPv6 when talking to nameservers, if
 the servers are identified by name rather than address (or when loaded
 from SRV records). If not defined, the default behaviour is to prefer
-IPv6.
+IPv4.
 
 =item * C<Protocol (udp|tcp)>
 
 Default: udp
 
-Specify the transport protocol to use.
+Specify the transport protocol (UDP or TCP) to use.
 
 =item * C<Loop SECONDS>
 
@@ -713,26 +717,40 @@ named C<rdnsd>, which will contain the following columns:
 
 =item * C<host> - hostname
 
+=item * C<family> - IP version (4 or 6)
+
+=item * C<proto> - transport protocol (UDP or TCP)
+
 =item * C<rate> - response rate as a decimal (0.00 - 1.00)
 
 =item * C<time> - average RTT in milliseconds
 
-=item * C<percentil_time> - average RTT in milliseconds at the
+=item * C<percentile_time> - average RTT in milliseconds at the
 configured percentile.
 
 =back
 
 =back
 
+=head1 RELOADING CONFIGURATION
+
+C<rdnsd> will reload its configuration if you send it a C<SIGHUP>:
+
+	$ kill -HUP `cat /path/to/pid/file`
+
+Arguments originally specified on the command line will always override
+new options added to the configuration file.
+
 =head1 OBTAINING STATISTICS
 
-If you unset C<UpdateInterval>, you can get statistics out of C<rdnsd>
-by sending it the C<USR1> signal:
+Every C<UpdateInterval> seconds, C<rdnsd> will write stats to the file
+specified by C<StatsFile>, and, if set, the SQLite database specified by
+C<Database>.
+
+If C<UpdateInterval> is unset, automatic updates will not occur, so to
+get statistics out of C<rdnsd>, you must sending it a C<USR1> signal:
 
 	$ kill -USR1 `cat /path/to/pid/file`
-
-This will cause C<rdnsd> to dump its current data to the statistics
-file.
 
 B<NOTE:> if you have C<N> servers and a C<Loop> value of C<M>, you must
 be careful not to send the USR1 signal to C<rdnsd> more often than every
@@ -744,14 +762,8 @@ If <rdnsd> is running in multithreaded mode, then you can send the C<USR1>
 signal much more often (once every C<Loop x Timeout> seconds).
 
 Note that C<rdnsd> will not I<immediately> update the file upon receiving
-the C<USR1> signal. You may need to wait for the current loop iteration
-to complete before the stats file is updated.
-
-=head1 RELOADING CONFIGURATION
-
-C<rdnsd> will reload its configuration if you send it a C<SIGHUP>:
-
-	$ kill -HUP `cat /path/to/pid/file`
+the C<USR1> signal. You may need to wait up to C<Loop> seconds for the
+current loop iteration to complete before the stats file is updated.
 
 =head2 STATISTICS FILE FORMAT
 
