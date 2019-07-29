@@ -4,6 +4,7 @@
 use Config::Simple;
 use DBI;
 use Getopt::Long;
+use IO::File;
 use Net::DNS;
 use POSIX qw(setsid strftime floor);
 use Pod::Usage;
@@ -278,21 +279,21 @@ sub load_config {
 	# rdnsd received a SIGHUP:
 	#
 	$debug		= $opts->{'debug'}	|| $config->param('Debug') eq 'true'		|| undef;
-	$loop		= $opts->{'loop'}	|| $config->param('Loop')			|| 3;
+	$multithreaded	= $opts->{'threads'}	|| $config->param('MultiThreaded') eq 'true'	|| 1;
 	$pidfile	= $opts->{'pidfile'}	|| $config->param('PidFile')			|| '/var/run/rdnsd/rdnsd.pid';
+	$database	= $opts->{'database'}	|| $config->param('Database')			|| '/var/run/rdnsd/rdnsd.sqlite';
+	$percentile	= $opts->{'percentile'}	|| $config->param('Percentile')			|| undef;
 	$family		= $opts->{'family'}	|| $config->param('AddressFamily')		|| 4;
 	$proto		= $opts->{'proto'}	|| $config->param('Protocol')			|| 'udp';
-	$question	= $opts->{'question'}	|| $config->param('Question')			|| '. A IN';
+	$loop		= $opts->{'loop'}	|| $config->param('Loop')			|| 3;
 	$timeout	= $opts->{'timeout'}	|| $config->param('Timeout')			|| 1;
 	$recurse	= $opts->{'recurse'}	|| $config->param('Recurse') eq 'true'		|| undef;
-	$statsfile	= $opts->{'statsfile'}	|| $config->param('StatsFile')			|| '/var/run/rdnsd/rdnsd.log';
+	$question	= $opts->{'question'}	|| $config->param('Question')			|| '. A IN';
 	$servers	= $opts->{'servers'}	|| $config->param('Servers')			|| undef;
 	$domains	= $opts->{'domains'}	|| $config->param('Domains')			|| undef;
-	$percentile	= $opts->{'percentile'}	|| $config->param('Percentile')			|| undef;
 	$optimistic	= $opts->{'optimistic'}	|| $config->param('Optimistic') eq 'true'	|| undef;
 	$update		= $opts->{'update'}	|| $config->param('UpdateInterval')		|| 290;
-	$multithreaded	= $opts->{'threads'}	|| $config->param('MultiThreaded') eq 'true'	|| undef;
-	$database	= $opts->{'database'}	|| $config->param('Database')			|| undef;
+	$statsfile	= $opts->{'statsfile'}	|| $config->param('StatsFile')			|| undef;
 
 	#
 	# configure question packet
@@ -346,101 +347,98 @@ sub update_serverlist {
 }
 
 sub update_stats {
-	if (!open(STATSFILE, '>'.$statsfile)) {
-		debug("error opening '%s': %s", $statsfile, $!);
+	my $fh;
+	$fh = IO::File->new($statsfile, 'w') if ($statsfile);
 
-		#
-		# try again in 30s
-		#
-		$updated = time() - 30;
+	if ($database) {
+		if (!$dbh || $dbh->ping) {
+			$dbh = DBI->connect('dbi:SQLite:dbname='.$database, '', '', { 'RaiseError' => 1, 'AutoCommit' => 0 });
+			$dbh->do("CREATE TABLE IF NOT EXISTS rdnsd (
+				id INTEGER NOT NULL PRIMARY KEY,
+				date DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				host VARCHAR(255) NOT NULL,
+				family INTEGER NOT NULL DEFAULT 4,
+				proto CHAR(3) NOT NULL DEFAULT 'udp',
+				rate DECIMAL(3,2) NOT NULL,
+				time INTEGER NOT NULL,
+				percentile_time INTEGER DEFAULT NULL
+			)");
+			$dbh->do('CREATE INDEX IF NOT EXISTS host_idx ON rdnsd(host)');
+			$dbh->do('CREATE INDEX IF NOT EXISTS date_idx ON rdnsd(date)');
+			$dbh->do('CREATE INDEX IF NOT EXISTS family_idx ON rdnsd(family)');
+			$dbh->do('CREATE INDEX IF NOT EXISTS proto_idx ON rdnsd(proto)');
 
-	} else {
-		if ($database) {
-			if (!$dbh || $dbh->ping) {
-				$dbh = DBI->connect('dbi:SQLite:dbname='.$database, '', '', { 'RaiseError' => 1, 'AutoCommit' => 0 });
-				$dbh->do("CREATE TABLE IF NOT EXISTS rdnsd (
-					id INTEGER NOT NULL PRIMARY KEY,
-					date DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-					host VARCHAR(255) NOT NULL,
-					family INTEGER NOT NULL DEFAULT 4,
-					proto CHAR(3) NOT NULL DEFAULT 'udp',
-					rate DECIMAL(3,2) NOT NULL,
-					time INTEGER NOT NULL,
-					percentile_time INTEGER DEFAULT NULL
-				)");
-				$dbh->do('CREATE INDEX IF NOT EXISTS host_idx ON rdnsd(host)');
-				$dbh->do('CREATE INDEX IF NOT EXISTS date_idx ON rdnsd(date)');
-				$dbh->do('CREATE INDEX IF NOT EXISTS family_idx ON rdnsd(family)');
-				$dbh->do('CREATE INDEX IF NOT EXISTS proto_idx ON rdnsd(proto)');
+			$sth = $dbh->prepare('INSERT INTO rdnsd (host, family, proto, rate, time, percentile_time) VALUES (?, ?, ?, ?, ?, ?)');
 
-				$sth = $dbh->prepare('INSERT INTO rdnsd (host, family, proto, rate, time, percentile_time) VALUES (?, ?, ?, ?, ?, ?)');
-
-				debug('initialised database in %s', $database);
-			}
-
-		} elsif ($dbh) {
-			$dbh->disconnect;
-			undef($dbh);
-			undef($sth);
-
+			debug('initialised database in %s', $database);
 		}
 
-		foreach my $ns (sort(@servers)) {
+	} elsif ($dbh) {
+		$dbh->disconnect;
+		undef($dbh);
+		undef($sth);
 
-			my ($rate, $time, $percentile_time);
+	}
 
-			if ($stats->{$ns}->{'count'} < 1) {
-				$stats->{$ns}->{'time'} = 0;
+	foreach my $ns (sort(@servers)) {
 
-				if ($optimistic) {
-					#
-					# optimistic, treat server as up
-					#
-					$stats->{$ns}->{'count'} = 1;
-					$stats->{$ns}->{'success'} = 1;
+		my ($rate, $time, $percentile_time);
 
-				} else {
-					#
-					# pessimistic, treat server as down
-					#
-					$stats->{$ns}->{'count'} = 1;
-					$stats->{$ns}->{'success'} = 0;
+		if ($stats->{$ns}->{'count'} < 1) {
+			$stats->{$ns}->{'time'} = 0;
 
-				}
+			if ($optimistic) {
+				#
+				# optimistic, treat server as up
+				#
+				$stats->{$ns}->{'count'} = 1;
+				$stats->{$ns}->{'success'} = 1;
+
+			} else {
+				#
+				# pessimistic, treat server as down
+				#
+				$stats->{$ns}->{'count'} = 1;
+				$stats->{$ns}->{'success'} = 0;
+
 			}
-
-			$rate = ($stats->{$ns}->{'success'} / $stats->{$ns}->{'count'});
-			$time = floor(1000 * $stats->{$ns}->{'time'} / $stats->{$ns}->{'count'});
-
-			my $line = sprintf('%s %0.2f %d', $ns, $rate, $time);
-
-			if ($percentile) {
-				# sort in ascending order
-				my @times = sort(@{$stats->{$ns}->{'times'}});
-
-				# find the position which corresponds to the percentile
-				my $pos = floor(scalar(@times) * $percentile / 100) - 1;
-
-				$percentile_time = floor(1000 * $times[$pos]);
-
-				$line .= sprintf(' %d', $percentile_time);
-			}
-
-			print STATSFILE $line."\n";
-
-			$sth->execute($ns, $family, $proto, $rate, $time, $percentile_time) if ($sth);
 		}
 
+		$rate = ($stats->{$ns}->{'success'} / $stats->{$ns}->{'count'});
+		$time = floor(1000 * $stats->{$ns}->{'time'} / $stats->{$ns}->{'count'});
+
+		my $line = sprintf('%s %0.2f %d', $ns, $rate, $time);
+
+		if ($percentile) {
+			# sort in ascending order
+			my @times = sort(@{$stats->{$ns}->{'times'}});
+
+			# find the position which corresponds to the percentile
+			my $pos = floor(scalar(@times) * $percentile / 100) - 1;
+
+			$percentile_time = floor(1000 * $times[$pos]);
+
+			$line .= sprintf(' %d', $percentile_time);
+		}
+
+		$fh->print($line."\n") if ($fh);
+
+		$sth->execute($ns, $family, $proto, $rate, $time, $percentile_time) if ($sth);
+	}
+
+	if ($fh) {
+		$fh->close;
 		debug("wrote stats to '%s'", $statsfile);
+	}
 
-		$dbh->commit if ($dbh);
-		debug("updated '%s'", $database) if ($database);
-		close(STATSFILE);
+	if ($dbh) {
+		$dbh->commit;
+		debug("updated '%s'", $database);
+	}
 
+	if ($fh || $dbh) {
 		$updated = time();
-
 		$need_update = undef;
-
 		$stats = {};
 	}
 }
@@ -506,67 +504,67 @@ of this file.
 
 =item * C<--debug>
 
-Enable debug mode.
-
-=item * C<--loop=LOOP>
-
-Set loop duration.
-
-=item * C<--pidfile=FILE>
-
-Specify pid file.
-
-=item * C<--family=(4|6)>
-
-Specify IP version.
-
-=item * C<--proto=QUESTION>
-
-Specify protocol.
-
-=item * C<--question=QUESTION>
-
-Specify question.
-
-=item * C<--timeout=TIMEOUT>
-
-Specify timeout.
-
-=item * C<--recurse>
-
-Enable recursion.
-
-=item * C<--servers=SERVERS>
-
-Specify servers to check.
-
-=item * C<--statsfile=FILE>
-
-Specify stats file.
-
-=item * C<--percentile=PERCENTILE>
-
-Specify a percentile to use when generating statistics.
-
-=item * C<--domains=DOMAINS>
-
-Specify domain names to query for a list of servers.
-
-=item * C<--optimistic>
-
-Enable Optimistic mode.
-
-=item * C<--update=TIME>
-
-Specify automatic stats update interval.
+Set C<Debug> option.
 
 =item * C<--multithreaded>
 
-Run in multithreaded mode.
+Set C<Multithreaded> option.
+
+=item * C<--pidfile=FILE>
+
+Set C<PidFile> option.
 
 =item * C<--database=FILE>
 
-Specify SQLite database.
+Set C<Database> option.
+
+=item * C<--percentile=PERCENTILE>
+
+Set C<Percentile> option.
+
+=item * C<--family=(4|6)>
+
+Set C<Family> option.
+
+=item * C<--proto=(udp|tcp)>
+
+Set C<Protocol> option.
+
+=item * C<--loop=LOOP>
+
+Set C<Loop> option.
+
+=item * C<--timeout=TIMEOUT>
+
+Set C<Timeout> option.
+
+=item * C<--recurse>
+
+Set C<Recurse> option.
+
+=item * C<--question=QUESTION>
+
+Set C<Question> option.
+
+=item * C<--servers=SERVERS>
+
+Set C<Servers> option.
+
+=item * C<--domains=DOMAINS>
+
+Set C<Domains> option.
+
+=item * C<--optimistic>
+
+Set C<Optimistic> option.
+
+=item * C<--update=TIME>
+
+Set C<UpdateInterval> option.
+
+=item * C<--statsfile=FILE>
+
+Set C<StatsFile> option.
 
 =back
 
@@ -579,11 +577,11 @@ The format is very simple. Here is an example:
 	MultiThreaded	true
 	PidFile		/var/run/rdnsd/rdnsd.pid
 	Database	/var/run/rdnsd/rdnsd.db
-	StatsFile	/var/run/rdnsd/rdnsd.log
 	Percentile	95
 	AddressFamily	4
 	Protocol	udp
 	Loop		3
+	Timeout		1
 	Recurse		false
 	Question	. A IN
 	Servers		ns1.example.com,ns2.example.net
@@ -599,101 +597,15 @@ configuration file.
 
 =item * C<Debug (true|false)>
 
-Default: false
+Default: C<false>
 
 Normally, C<rdnsd> will daemonise once started. If the C<Debug> parameter
 is C<true>, C<rdnsd> will stay in the foreground and spam your terminal
 with debugging information.
 
-=item * C<PidFile /path/to/pid/file>
-
-Default: /var/run/rdnsd/rdnsd.pid
-
-The file where C<rdnsd> will write its pid.
-
-=item * C<StatsFile /path/to/stats/file>
-
-Default: /var/run/rdnsd/rdnsd.log
-
-The file where C<rdnsd> will write statistics to when signalled. See
-L<OBTAINING STATISTICS> for further information.
-
-=item * C<Percentile PERCENTILE>
-
-If this option is set, C<rdnsd> will calculate the response time at the
-given percentile. See L<STATISTICS FILE FORMAT> for further information.
-
-=item * C<AddressFamily (4|6)>
-
-Specifies whether to prefer IPv4 or IPv6 when talking to nameservers, if
-the servers are identified by name rather than address (or when loaded
-from SRV records). If not defined, the default behaviour is to prefer
-IPv4.
-
-=item * C<Protocol (udp|tcp)>
-
-Default: udp
-
-Specify the transport protocol (UDP or TCP) to use.
-
-=item * C<Loop SECONDS>
-
-Default: 2
-
-This specifies the length of the main loop. If this is set to 2, then
-each server will be checked every 2 seconds. This value can be a decimal
-fraction, eg 0.25.
-
-=item * C<Recurse (true|false)>
-
-Default: false
-
-Enable recursion.
-
-=item * C<Question QUESTION>
-
-Default: example.com. IN A
-
-Specify the DNS question. The format is "QNAME QCLASS QTYPE".
-
-=item * C<Servers SERVERS>
-
-Default: none
-
-Specify the servers to be checked. This directive can't be used at the
-same time as the "Domains" directive.
-
-=item * C<Domains DOMAINS>
-
-Default: none
-
-Rather than specifying a list of nameservers, you can provide a list of
-domains instead. For each domain, C<rdnsd> will query for SRV records for
-C<_dns._udp> under the domain and use the targets of any SRV records
-returned.
-
-The SRV record is checked once at start-up, so if the list of hosts
-changes, you will need to restart C<rdnsd>.
-
-=item * C<Optimistic (true|false)>
-
-Default: false
-
-This parameter controls what happens when C<rdnsd> outputs statistics but
-finds a server in its list that it has not yet had time to send a
-query to. If its value is true, then the server will be reported as up;
-if false, it will be reported as down.
-
-=item * C<UpdateInterval TIME>
-
-Default: 290
-
-This parameter tells C<rdnsd> to automatically update the statistics file
-every C<TIME> seconds.
-
 =item * C<Multithreaded (true|false)>
 
-Default: false
+Default: C<true>
 
 This parameter enables multithreaded mode. In this mode, C<rdnsd> will
 probe servers in parallel inside separate threads. Otherwise, it probes
@@ -701,9 +613,15 @@ them in serial, one after the other. Use of multithreaded mode resolves
 some issues with monitoring large numbers of servers, at the cost of
 higher CPU load.
 
+=item * C<PidFile /path/to/pid/file>
+
+Default: C</var/run/rdnsd/rdnsd.pid>
+
+The file where C<rdnsd> will write its pid.
+
 =item * C<Database FILE>
 
-Default: none
+Default: C</var/run/rdnsd/rdnsd.sqlite>
 
 If set, C<rdnsd> will create an SQLite database at the specified file
 and write statistics to it. The database will contain a single table
@@ -730,6 +648,95 @@ configured percentile.
 
 =back
 
+=item * C<Percentile PERCENTILE>
+
+If this option is set, C<rdnsd> will calculate the response time at the
+given percentile. See L<STATISTICS FILE FORMAT> for further information.
+
+=item * C<AddressFamily (4|6)>
+
+Specifies whether to prefer IPv4 or IPv6 when talking to nameservers, if
+the servers are identified by name rather than address (or when loaded
+from SRV records). If not defined, the default behaviour is to prefer
+IPv4.
+
+=item * C<Protocol (udp|tcp)>
+
+Default: C<udp>
+
+Specify the transport protocol (UDP or TCP) to use.
+
+=item * C<Loop SECONDS>
+
+Default: C<3>
+
+This specifies the length of the main loop. If this is set to 2, then
+each server will be checked every 2 seconds. This value can be a decimal
+fraction, eg 0.25.
+
+=item * C<Timeout SECONDS>
+
+Default: C<1>
+
+This specifies the timeout for DNS queries. A server will be considered
+down if it does not respond within this amount of time.
+
+=item * C<Recurse (true|false)>
+
+Default: C<false>
+
+Enable recursion.
+
+=item * C<Question QUESTION>
+
+Default: C<example.com. IN A>
+
+Specify the DNS question. The format is "QNAME QCLASS QTYPE".
+
+=item * C<Servers SERVERS>
+
+Default: none
+
+Specify the servers to be checked. This directive can't be used at the
+same time as the "Domains" directive.
+
+=item * C<Domains DOMAINS>
+
+Default: none
+
+Rather than specifying a list of nameservers, you can provide a list of
+domains instead. For each domain, C<rdnsd> will query for SRV records for
+C<_dns._udp> under the domain and use the targets of any SRV records
+returned.
+
+The SRV record is checked once at start-up, so if the list of hosts
+changes, you will need to restart C<rdnsd>.
+
+=item * C<Optimistic (true|false)>
+
+Default: C<false>
+
+This parameter controls what happens when C<rdnsd> outputs statistics but
+finds a server in its list that it has not yet had time to send a
+query to. If its value is true, then the server will be reported as up;
+if false, it will be reported as down.
+
+=item * C<UpdateInterval TIME>
+
+Default: C<293>
+
+This parameter tells C<rdnsd> to automatically update the statistics file
+every C<TIME> seconds.
+
+=item * C<StatsFile /path/to/stats/file>
+
+Default: none
+
+B<Note:> this is a legacy option to provide backwards compatibility.
+
+Th specifies the file where C<rdnsd> will write statistics to when
+signalled. See L<OBTAINING STATISTICS> for further information.
+
 =back
 
 =head1 RELOADING CONFIGURATION
@@ -743,34 +750,34 @@ new options added to the configuration file.
 
 =head1 OBTAINING STATISTICS
 
-Every C<UpdateInterval> seconds, C<rdnsd> will write stats to the file
-specified by C<StatsFile>, and, if set, the SQLite database specified by
-C<Database>.
+Every C<UpdateInterval> seconds, C<rdnsd> will write stats to the SQLite
+database specified by C<Database>, and, if set, the file specified by
+C<StatsFile>.
+
+The recommended way to obtain statistics is to query the SQLite database
+specified by the C<Database> directive.
 
 If C<UpdateInterval> is unset, automatic updates will not occur, so to
 get statistics out of C<rdnsd>, you must sending it a C<USR1> signal:
 
 	$ kill -USR1 `cat /path/to/pid/file`
 
-B<NOTE:> if you have C<N> servers and a C<Loop> value of C<M>, you must
-be careful not to send the USR1 signal to C<rdnsd> more often than every
-C<N x M> seconds, otherwise C<rdnsd> will not have enough time to test
-every server. You probably want to send the signal about every C<3 x N x M>
-seconds if you want reliable statistics.
+B<NOTE:> if multithreaded mode is disabled, and you have C<N> servers
+and a C<Loop> value of C<M>, you must be careful not to send the USR1
+signal to C<rdnsd> more often than every C<N x M> seconds, otherwise
+C<rdnsd> will not have enough time to test every server. You probably
+want to send the signal about every C<3 x N x M> seconds if you want
+reliable statistics when not running in multithreaded mode.
 
-If <rdnsd> is running in multithreaded mode, then you can send the C<USR1>
-signal much more often (once every C<Loop x Timeout> seconds).
+If C<rdnsd> I<is> running in multithreaded mode, then you can send the
+C<USR1> signal much more often (once every C<Loop x Timeout> seconds).
 
-Note that C<rdnsd> will not I<immediately> update the file upon receiving
-the C<USR1> signal. You may need to wait up to C<Loop> seconds for the
-current loop iteration to complete before the stats file is updated.
+=head2 (LEGACY) STATISTICS FILE FORMAT
 
-=head2 STATISTICS FILE FORMAT
-
-The statistics file will contain one line for each server that is being
-checked. Each line contains the nameserver checked, the response rate as
-a decimal fraction, and the average response time (in milliseconds), for
-example:
+The (legacy* statistics file will contain one line for each server that
+is being checked. Each line contains the nameserver checked, the response
+rate as a decimal fraction, and the average response time (in milliseconds),
+for example:
 
 	ns0.example.com 1.00 25
 
@@ -785,6 +792,10 @@ percentile.
 
 Once the file has been written, C<rdnsd>'s internal data is reset, so
 subsequent signals will produce fresh statistical data.
+
+Note that C<rdnsd> will not I<immediately> update the file upon receiving
+the C<USR1> signal. You may need to wait up to C<Loop> seconds for the
+current loop iteration to complete before the stats file is updated.
 
 =head1 SEE ALSO
 
