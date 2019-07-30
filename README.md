@@ -1,21 +1,22 @@
 # NAME
 
-`rdnsd` - a remote DNS server monitoring tool
+rdnsd is a remote DNS server monitoring system.
 
 # DESCRIPTION
 
-`rdnsd` is a tool which can be used to monitor the availability and
-responsiveness remote DNS servers. Given a list of DNS servers, it will
-periodically query each server in turn and record whether a response was
-received, and how quickly. This information can then be obtained by
-sending a signal to the `rdnsd` process - a Munin plugin is provided as an
-example of how this can be achieved.
+`rdnsd` can be used to monitor the availability and responsiveness of
+remote DNS servers. Given a list of DNS servers, it will periodically
+query each server in turn and record whether a response was received,
+and how quickly. This information can then be queried by querying an
+SQLite database.
 
 # USAGE
 
-        C<rdnsd> [OPTIONS]
+        C<rdnsd> OPTIONS
 
 # OPTIONS
+
+The following command line options are supported.
 
 - `--help`
 
@@ -24,80 +25,19 @@ example of how this can be achieved.
 - `--config=FILE`
 
     Specify the configuration file. See ["CONFIGURATION FILE"](#configuration-file) for further
-    details. Arguments passed on the command line will override the contents
-    of this file.
+    details. If not specified, `/etc/rdnsd/rdnsd.conf` is used.
 
 - `--debug`
 
-    Set `Debug` option.
-
-- `--multithreaded`
-
-    Set `Multithreaded` option.
-
-- `--pidfile=FILE`
-
-    Set `PidFile` option.
-
-- `--database=FILE`
-
-    Set `Database` option.
-
-- `--percentile=PERCENTILE`
-
-    Set `Percentile` option.
-
-- `--family=(4|6)`
-
-    Set `Family` option.
-
-- `--proto=(udp|tcp)`
-
-    Set `Protocol` option.
-
-- `--loop=LOOP`
-
-    Set `Loop` option.
-
-- `--timeout=TIMEOUT`
-
-    Set `Timeout` option.
-
-- `--recurse`
-
-    Set `Recurse` option.
-
-- `--question=QUESTION`
-
-    Set `Question` option.
-
-- `--servers=SERVERS`
-
-    Set `Servers` option.
-
-- `--domains=DOMAINS`
-
-    Set `Domains` option.
-
-- `--optimistic`
-
-    Set `Optimistic` option.
-
-- `--update=TIME`
-
-    Set `UpdateInterval` option.
-
-- `--statsfile=FILE`
-
-    Set `StatsFile` option.
+    Enable debug mode. `rdnsd` will not daemonise and will emit debugging
+    information to STDERR.
 
 # CONFIGURATION FILE
 
-The easiest way to configure `rdnsd` is to provide a configuration file.
-The format is very simple. Here is an example:
+`rdnsd` must be configured using a configuration file. The following
+is an example:
 
-        Debug           false
-        MultiThreaded   true
+        UpdateInterval  293
         PidFile         /var/run/rdnsd/rdnsd.pid
         Database        /var/run/rdnsd/rdnsd.db
         Percentile      95
@@ -109,30 +49,17 @@ The format is very simple. Here is an example:
         Question        . A IN
         Servers         ns1.example.com,ns2.example.net
         Domains         example.com
-        Optimistic      false
-        UpdateInterval  300
 
-The directives are explained below. As noted above, if the equivalent
-command line argument is passed, it will override the value in the
-configuration file.
+The directives are explained below.
 
-- `Debug (true|false)`
+- `UpdateInterval TIME`
 
-    Default: `false`
+    Default: `293`
 
-    Normally, `rdnsd` will daemonise once started. If the `Debug` parameter
-    is `true`, `rdnsd` will stay in the foreground and spam your terminal
-    with debugging information.
-
-- `Multithreaded (true|false)`
-
-    Default: `true`
-
-    This parameter enables multithreaded mode. In this mode, `rdnsd` will
-    probe servers in parallel inside separate threads. Otherwise, it probes
-    them in serial, one after the other. Use of multithreaded mode resolves
-    some issues with monitoring large numbers of servers, at the cost of
-    higher CPU load.
+    This parameter tells `rdnsd` to automatically update the statistics
+    database every `TIME` seconds. This value **MUST** be more than
+    `Loop x Timeout` seconds, and **SHOULD** be at least three times that
+    value.
 
 - `PidFile /path/to/pid/file`
 
@@ -149,21 +76,31 @@ configuration file.
     named `rdnsd`, which will contain the following columns:
 
     - `id` - unique row ID
-    - `date` - date/time the row was inserted
-    - `host` - hostname
+    - `start_time` - date/time the monitoring interval began
+    - `ends_time` - date/time the monitoring interval ended
+    - `host` - server name
     - `family` - IP version (4 or 6)
     - `proto` - transport protocol (UDP or TCP)
-    - `rate` - response rate as a decimal (0.00 - 1.00)
+    - `count` - number of queries sent to the server
+    - `success` - number of successful queries
+    - `rate` - response rate as a decimal (0.00 - 1.00) (equivalent
+    to `success / rate`)
+    - `min_time` - lowest observed RTT in milliseconds
     - `time` - average RTT in milliseconds
+    - `time` - highest observed RTT in milliseconds
     - `percentile_time` - average RTT in milliseconds at the
     configured percentile.
 
 - `Percentile PERCENTILE`
 
+    Default: none
+
     If this option is set, `rdnsd` will calculate the response time at the
-    given percentile. See ["STATISTICS FILE FORMAT"](#statistics-file-format) for further information.
+    given percentile.
 
 - `AddressFamily (4|6)`
+
+    Default: `4`
 
     Specifies whether to prefer IPv4 or IPv6 when talking to nameservers, if
     the servers are identified by name rather than address (or when loaded
@@ -189,13 +126,14 @@ configuration file.
     Default: `1`
 
     This specifies the timeout for DNS queries. A server will be considered
-    down if it does not respond within this amount of time.
+    down if it does not respond within this amount of time. This value
+    **MUST** be less than the value of `Loop`.
 
 - `Recurse (true|false)`
 
     Default: `false`
 
-    Enable recursion.
+    Enable recursion (i.e. set the \`rd\` bit on the queries sent to servers).
 
 - `Question QUESTION`
 
@@ -207,36 +145,27 @@ configuration file.
 
     Default: none
 
-    Specify the servers to be checked. This directive can't be used at the
-    same time as the "Domains" directive.
+    Specify the servers to be checked. You can either specify a server name
+    (which will be resolved to a set of IP addresses), or literal IPv4 or
+    IPv6 addresses.
+
+    This directive can't be used at the same time as the `Domains`
+    directive.
 
 - `Domains DOMAINS`
 
     Default: none
 
     Rather than specifying a list of nameservers, you can provide a list of
-    domains instead. For each domain, `rdnsd` will query for SRV records for
-    `_dns._udp` under the domain and use the targets of any SRV records
-    returned.
+    domains instead. For each domain, `rdnsd` will query for `SRV` records
+    for `_dns._udp` under the domain and use the targets of any `SRV`
+    records returned.
 
-    The SRV record is checked once at start-up, so if the list of hosts
-    changes, you will need to restart `rdnsd`.
+    The server list will be updated when the TTL on the `SRV` records
+    expires.
 
-- `Optimistic (true|false)`
-
-    Default: `false`
-
-    This parameter controls what happens when `rdnsd` outputs statistics but
-    finds a server in its list that it has not yet had time to send a
-    query to. If its value is true, then the server will be reported as up;
-    if false, it will be reported as down.
-
-- `UpdateInterval TIME`
-
-    Default: `293`
-
-    This parameter tells `rdnsd` to automatically update the statistics file
-    every `TIME` seconds.
+    This directive can't be used at the same time as the `Servers`
+    directive.
 
 - `StatsFile /path/to/stats/file`
 
@@ -244,8 +173,9 @@ configuration file.
 
     **Note:** this is a legacy option to provide backwards compatibility.
 
-    Th specifies the file where `rdnsd` will write statistics to when
-    signalled. See ["OBTAINING STATISTICS"](#obtaining-statistics) for further information.
+    It specifies a file to which `rdnsd` will write statistics.
+
+    See ["OBTAINING STATISTICS"](#obtaining-statistics) for further information.
 
 # RELOADING CONFIGURATION
 
@@ -253,39 +183,21 @@ configuration file.
 
         $ kill -HUP `cat /path/to/pid/file`
 
-Arguments originally specified on the command line will always override
-new options added to the configuration file.
-
 # OBTAINING STATISTICS
 
 Every `UpdateInterval` seconds, `rdnsd` will write stats to the SQLite
 database specified by `Database`, and, if set, the file specified by
 `StatsFile`.
 
-The recommended way to obtain statistics is to query the SQLite database
-specified by the `Database` directive.
-
-If `UpdateInterval` is unset, automatic updates will not occur, so to
-get statistics out of `rdnsd`, you must sending it a `USR1` signal:
-
-        $ kill -USR1 `cat /path/to/pid/file`
-
-**NOTE:** if multithreaded mode is disabled, and you have `N` servers
-and a `Loop` value of `M`, you must be careful not to send the USR1
-signal to `rdnsd` more often than every `N x M` seconds, otherwise
-`rdnsd` will not have enough time to test every server. You probably
-want to send the signal about every `3 x N x M` seconds if you want
-reliable statistics when not running in multithreaded mode.
-
-If `rdnsd` _is_ running in multithreaded mode, then you can send the
-`USR1` signal much more often (once every `Loop x Timeout` seconds).
+Once the database has been updated, `rdnsd`'s internal data is reset,
+so subsequent signals will produce fresh statistical data.
 
 ## (LEGACY) STATISTICS FILE FORMAT
 
-The (legacy\* statistics file will contain one line for each server that
-is being checked. Each line contains the nameserver checked, the response
-rate as a decimal fraction, and the average response time (in milliseconds),
-for example:
+The (legacy) statistics file will contain one line for each server that
+is being checked. Each line contains the nameserver checked, the
+response rate as a decimal fraction, and the average response time (in
+milliseconds), for example:
 
         ns0.example.com 1.00 25
 
@@ -298,12 +210,10 @@ the end of the line:
 This value is the response time (in milliseconds) at the given
 percentile.
 
-Once the file has been written, `rdnsd`'s internal data is reset, so
-subsequent signals will produce fresh statistical data.
-
-Note that `rdnsd` will not _immediately_ update the file upon receiving
-the `USR1` signal. You may need to wait up to `Loop` seconds for the
-current loop iteration to complete before the stats file is updated.
+Note that `rdnsd` will not _immediately_ update the file upon
+receiving the `USR1` signal. You need to wait up to `Loop` seconds
+for the current loop iteration to complete before the stats file is
+updated.
 
 # SEE ALSO
 
@@ -312,6 +222,14 @@ current loop iteration to complete before the stats file is updated.
 
 # COPYRIGHT
 
-`rdnsd` is Copyright 2013 CentralNic Ltd. All rights reserved. This
+`rdnsd` is Copyright 2019 CentralNic Ltd. All rights reserved. This
 program is free software; you can redistribute it and/or modify it under
 the same terms as Perl itself.
+
+# POD ERRORS
+
+Hey! **The above document had some coding errors, which are explained below:**
+
+- Around line 620:
+
+    You forgot a '=back' before '=head1'
