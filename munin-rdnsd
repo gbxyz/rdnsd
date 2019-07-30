@@ -7,6 +7,8 @@ use Net::DNS;
 use strict;
 
 #
+# this plugin only works with the legacy stats file. it doesn't work with SQLite databases.
+#
 # to use this plugin, symlink it to /etc/munin/plugins/rdnsd_(rate|time)_(udp|tcp)[_(ipv4|ipv6)]
 #
 # you'll need to multiple symlinks if you want to monitor multiple metrics, for example:
@@ -63,9 +65,7 @@ my $pidfile		= $config->param('PidFile');
 my $statsfile		= $config->param('StatsFile');
 my $servers		= $config->param('Servers');
 my $domains		= $config->param('Domains');
-my $update		= $config->param('UpdateInterval');
 my $timeout		= $config->param('Timeout') || 1;
-my $multithreaded	= $config->param('MultiThreaded');
 my $loop		= $config->param('Loop');
 
 my ($warning, $critical);
@@ -133,33 +133,6 @@ if ($ARGV[0] eq 'config') {
 	}
 
 	exit;
-}
-
-if (!$update) {
-	#
-	# no UpdateInterval is defined in the configuration, so we need to send
-	# the USR1 signal to rdnsd.
-	#
-	# to ensure good statistics, we calculate the maximum acceptable age of the
-	# log file, based on whether rdnsd is running in multithreaded mode, the
-	# number of servers, the timeout, and a reasonable number of data points (3).
-	#
-	# if you have a lot of servers, you probably want to configure
-	# UpdateInterval to ensure reliable stats.
-	#
-	my $maxage = 3 * ($multithreaded ? $loop : scalar(@servers) * $loop);
-
-	if (time() - (stat($statsfile))[9] > $maxage) {
-		die("Error opening '$pidfile': $!") if (!open(PIDFILE, $pidfile));
-		chomp(my $pid = <PIDFILE>);
-		close(PIDFILE);
-
-		die("No processes signalled") if (kill('USR1', $pid) < 1);
-
-		# now we need to sleep to allow rdnsd to complete its current
-		# loop and update the stats file:
-		sleep(1 + $maxage);
-	}
 }
 
 die("Error opening '$statsfile': $!") if (!open(FILE, $statsfile));
