@@ -490,7 +490,7 @@ sub initialise_database {
 	# create table
 	#
 	$DBH->do("CREATE TABLE IF NOT EXISTS rdnsd (
-		id		INTEGER UNSIGNED NOT NULL PRIMARY KEY,
+		id		INTEGER NOT NULL PRIMARY KEY,
 		node_id		VARCHAR(255) NOT NULL,
 		start_time	DATETIME NOT NULL,
 		end_time	DATETIME NOT NULL,
