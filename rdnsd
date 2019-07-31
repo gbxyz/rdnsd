@@ -512,7 +512,9 @@ sub update_stats {
 #
 sub resolve {
 	my $name = lc(shift);
-	my $type = shift || 'A';
+	my $family = shift || 4;
+
+	my $type = (4 == $family ? 'A' : 'AAAA');
 
 	if (($name =~ /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/ && 'A' eq $type) || ($name =~ /^[0-9a-f:]+$/i && 'AAAA' eq $type)) {
 		#
