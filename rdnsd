@@ -301,20 +301,20 @@ sub load_config {
 	#
 	# copy values and set defaults for missing entries
 	#
-	$CONF->{'NodeID'}		= $ini->param('NodeID')				|| hostname();
-	$CONF->{'UpdateInterval'}	= $ini->param('UpdateInterval')			|| 293;
-	$CONF->{'PidFile'}		= $ini->param('PidFile')			|| '/var/run/rdnsd/rdnsd.pid';
-	$CONF->{'Database'}		= $ini->param('Database')			|| '/var/run/rdnsd/rdnsd.sqlite';
-	$CONF->{'Percentile'}		= $ini->param('Percentile')			|| undef;
-	$CONF->{'AddressFamily'}	= $ini->param('AddressFamily')			|| 4;
-	$CONF->{'Protocol'}		= $ini->param('Protocol')			|| 'udp';
-	$CONF->{'Loop'}			= $ini->param('Loop')				|| 3;
-	$CONF->{'Timeout'}		= $ini->param('Timeout')			|| 1;
-	$CONF->{'Recurse'}		= $ini->param('Recurse') eq 'true'		|| undef;
-	$CONF->{'Question'}		= $ini->param('Question')			|| '. A IN';
-	$CONF->{'Servers'}		= $ini->param('Servers')			|| undef;
-	$CONF->{'Domains'}		= $ini->param('Domains')			|| undef;
-	$CONF->{'StatsFile'}		= $ini->param('StatsFile')			|| undef;
+	$CONF->{'NodeID'}		= $ini->param('NodeID')			|| hostname();
+	$CONF->{'UpdateInterval'}	= $ini->param('UpdateInterval')		|| 293;
+	$CONF->{'PidFile'}		= $ini->param('PidFile')		|| '/var/run/rdnsd/rdnsd.pid';
+	$CONF->{'Database'}		= $ini->param('Database')		|| '/var/run/rdnsd/rdnsd.sqlite';
+	$CONF->{'Percentile'}		= $ini->param('Percentile')		|| undef;
+	$CONF->{'AddressFamily'}	= $ini->param('AddressFamily')		|| 4;
+	$CONF->{'Protocol'}		= $ini->param('Protocol')		|| 'udp';
+	$CONF->{'Loop'}			= $ini->param('Loop')			|| 3;
+	$CONF->{'Timeout'}		= $ini->param('Timeout')		|| 1;
+	$CONF->{'Recurse'}		= $ini->param('Recurse') eq 'true'	|| undef;
+	$CONF->{'Question'}		= $ini->param('Question')		|| '. A IN';
+	$CONF->{'Servers'}		= $ini->param('Servers')		|| undef;
+	$CONF->{'Domains'}		= $ini->param('Domains')		|| undef;
+	$CONF->{'StatsFile'}		= $ini->param('StatsFile')		|| undef;
 
 	#
 	# configure question packet
@@ -378,36 +378,7 @@ sub update_serverlist {
 sub update_stats {
 
 	if ($CONF->{'Database'}) {
-		if (!$DBH) {
-			$DBH = DBI->connect('dbi:SQLite:dbname='.$CONF->{'Database'}, '', '', { 'RaiseError' => 1, 'AutoCommit' => 0 });
-			$DBH->do("CREATE TABLE IF NOT EXISTS rdnsd (
-				id INTEGER NOT NULL PRIMARY KEY,
-				node_id VARCHAR(255) NOT NULL,
-				start_time DATETIME NOT NULL,
-				end_time DATETIME NOT NULL,
-				host VARCHAR(255) NOT NULL,
-				family INTEGER NOT NULL DEFAULT 4,
-				proto CHAR(3) NOT NULL DEFAULT 'udp',
-				count INTEGER NOT NULL,
-				success INTEGER NOT NULL,
-				rate DECIMAL NOT NULL,
-				min_time INTEGER NOT NULL,
-				time INTEGER NOT NULL,
-				max_time INTEGER NOT NULL,
-				percentile_time INTEGER DEFAULT NULL
-			)");
-			$DBH->do('CREATE INDEX IF NOT EXISTS host_idx ON rdnsd(host)');
-			$DBH->do('CREATE INDEX IF NOT EXISTS start_time_idx ON rdnsd(start_time)');
-			$DBH->do('CREATE INDEX IF NOT EXISTS end_time_idx ON rdnsd(end_time)');
-			$DBH->do('CREATE INDEX IF NOT EXISTS family_idx ON rdnsd(family)');
-			$DBH->do('CREATE INDEX IF NOT EXISTS proto_idx ON rdnsd(proto)');
-
-			$STH = $DBH->prepare('INSERT
-						INTO rdnsd (node_id, start_time, end_time, host, family, proto, count, success, rate, min_time, time, max_time, percentile_time)
-						VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
-
-			debug('initialised database in %s', $CONF->{'Database'});
-		}
+		initialise_database() if (!$DBH);
 
 	} elsif ($DBH) {
 		#
@@ -507,6 +478,51 @@ sub update_stats {
 		$UPDATED = time();
 		$STATS = {};
 	}
+}
+
+sub initialise_database {
+	#
+	# initialise database connection
+	#
+	$DBH = DBI->connect('dbi:SQLite:dbname='.$CONF->{'Database'}, '', '', { 'RaiseError' => 1, 'AutoCommit' => 0 });
+
+	#
+	# create table
+	#
+	$DBH->do("CREATE TABLE IF NOT EXISTS rdnsd (
+		id		INTEGER UNSIGNED NOT NULL PRIMARY KEY,
+		node_id		VARCHAR(255) NOT NULL,
+		start_time	DATETIME NOT NULL,
+		end_time	DATETIME NOT NULL,
+		host		VARCHAR(255) NOT NULL,
+		family		INTEGER UNSIGNED NOT NULL DEFAULT 4,
+		proto		CHAR(3) NOT NULL DEFAULT 'udp',
+		count		INTEGER UNSIGNED NOT NULL,
+		success		INTEGER UNSIGNED NOT NULL,
+		rate		DECIMAL UNSIGNED NOT NULL,
+		min_time	INTEGER UNSIGNED NOT NULL,
+		time		INTEGER UNSIGNED NOT NULL,
+		max_time	INTEGER UNSIGNED NOT NULL,
+		percentile_time	INTEGER UNSIGNED DEFAULT NULL
+	)");
+
+	#
+	# create indexes
+	#
+	$DBH->do('CREATE INDEX IF NOT EXISTS host_idx		ON rdnsd(host)');
+	$DBH->do('CREATE INDEX IF NOT EXISTS start_time_idx	ON rdnsd(start_time)');
+	$DBH->do('CREATE INDEX IF NOT EXISTS end_time_idx	ON rdnsd(end_time)');
+	$DBH->do('CREATE INDEX IF NOT EXISTS family_idx		ON rdnsd(family)');
+	$DBH->do('CREATE INDEX IF NOT EXISTS proto_idx		ON rdnsd(proto)');
+
+	#
+	# prepare INSERT statement
+	#
+	$STH = $DBH->prepare('INSERT
+				INTO rdnsd (node_id, start_time, end_time, host, family, proto, count, success, rate, min_time, time, max_time, percentile_time)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+
+	debug('initialised database in %s', $CONF->{'Database'});
 }
 
 #
