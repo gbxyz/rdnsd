@@ -631,6 +631,8 @@ details. If not specified, C</etc/rdnsd/rdnsd.conf> is used.
 Enable debug mode. C<rdnsd> will not daemonise and will emit debugging
 information to STDERR.
 
+=back
+
 =head1 CONFIGURATION FILE
 
 C<rdnsd> must be configured using a configuration file. The following
