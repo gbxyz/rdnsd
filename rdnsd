@@ -11,72 +11,65 @@ use List::Util qw(min max);
 use Net::DNS;
 use POSIX qw(setsid strftime floor);
 use Pod::Usage;
+use Sys::Hostname;
 use Sys::Syslog qw(:standard :macros);
 use Time::HiRes qw(time sleep);
 use threads;
+use vars qw($VERSION $CFILE $DEBUG $HELP $PACKET $CONF @SERVERS $RELOAD $REFRESH $CACHE $STATS $DBH $STH $UPDATED);
 use strict;
-use vars qw($VERSION);
 
-our $VERSION = '0.10';
+$VERSION = '0.10';
+
+$CFILE = '/etc/rdnsd/rdnsd.conf';
 
 #
 # get config from command line:
 #
-my $cfile = '/etc/rdnsd/rdnsd.conf';
-my $debug;
-my $help;
+exit(1) unless (GetOptions(
+	'config=s' => \$CFILE,
+	'debug'    => \$DEBUG,
+	'help'     => \$HELP,
+));
 
-GetOptions(
-	'config=s' => \$cfile,
-	'debug'    => \$debug,
-	'help'     => \$help,
-);
-
-pod2usage('-verbose' => 99, '-sections' => 'USAGE|OPTIONS') if ($help);
-
-#
-# pre-compiled query packet
-#
-my $qpacket;
+pod2usage('-verbose' => 99, '-sections' => 'USAGE|OPTIONS') if ($HELP);
 
 #
 # load configuration
 #
-my $config;
 load_config();
 
 #
 # sense check
 #
-if (!$config->{'Database'} && !$config->{'StatsFile'}) {
-	die("ERROR: config must include either a 'Database' or 'StatsFile' directie.\n");
+if (!$CONF->{'Database'} && !$CONF->{'StatsFile'}) {
+	die("ERROR: config must include either a 'Database' or 'StatsFile' directive.\n");
 
-} elsif ($config->{'Servers'} && $config->{'Domains'}) {
+} elsif ($CONF->{'Servers'} && $CONF->{'Domains'}) {
 	die("ERROR: Both 'Servers' and 'Domains' are present in config: please choose one or the other.\n");
 
-} elsif ($config->{'Timeout'} > $config->{'Loop'}) {
+} elsif ($CONF->{'Timeout'} > $CONF->{'Loop'}) {
 	die(sprintf(
 		"ERROR: value for 'Timeout' (%u) must not be more  than 'Loop' (%u).\n",
-		$config->{'Timeout'},
-		$config->{'Loop'}
+		$CONF->{'Timeout'},
+		$CONF->{'Loop'}
 	));
 
-} elsif ($config->{'UpdateInterval'} <= $config->{'Loop'} * $config->{'Timeout'}) {
+} elsif ($CONF->{'UpdateInterval'} <= $CONF->{'Loop'} * $CONF->{'Timeout'}) {
 	die(sprintf(
 		"ERROR: value for 'UpdateInterval' (%u) must be more than 'Loop' x 'Timeout' (%u x %u = %u).\n",
-		$config->{'UpdateInterval'},
-		$config->{'Loop'},
-		$config->{'Timeout'},
-		($config->{'Loop'} * $config->{'Timeout'})
+		$CONF->{'UpdateInterval'},
+		$CONF->{'Loop'},
+		$CONF->{'Timeout'},
+		($CONF->{'Loop'} * $CONF->{'Timeout'})
 	));
 
-} elsif ($config->{'UpdateInterval'} <= 3 * $config->{'Loop'} * $config->{'Timeout'}) {
+} elsif ($CONF->{'UpdateInterval'} <= 3 * $CONF->{'Loop'} * $CONF->{'Timeout'}) {
 	warn(sprintf(
 		"WARNING: value for 'UpdateInterval' (%u) should be at least three times the value of 'Loop' x 'Timeout' (3 x %u x %u = %u)\n",
-		$config->{'UpdateInterval'},
-		$config->{'Loop'},
-		$config->{'Timeout'},
-		(3 * $config->{'Loop'} * $config->{'Timeout'})
+		$CONF->{'UpdateInterval'},
+		$CONF->{'Loop'},
+		$CONF->{'Timeout'},
+		(3 * $CONF->{'Loop'} * $CONF->{'Timeout'})
 	));
 }
 
@@ -89,39 +82,21 @@ setlogmask(LOG_UPTO(LOG_DEBUG));
 debug('rdnsd v%s starting', $VERSION);
 
 #
-# these are populated by update_serverlist():
+# initialise DNS cache
 #
-my @servers;
-my $reload;
-my $refresh;
-
-#
-# cache which stores A/AAAA addresses of nameservers
-#
-my $cache = {};
-
-#
-# database and statement handles
-#
-my ($dbh, $sth);
+$CACHE = {};
 
 #
 # generate list of servers
 #
 update_serverlist();
 
-die('no servers found') if (scalar(@servers) < 1);
+die('no servers found') if (scalar(@SERVERS) < 1);
 
 #
-# we put statistics data in here
+# daemonize:
 #
-my $stats = {};
-
-#
-# optionally daemonize:
-#
-my $daemon;
-unless ($debug) {
+unless ($DEBUG) {
 	if (fork() > 0) {
 		exit 0;
 
@@ -131,35 +106,39 @@ unless ($debug) {
 		$0 = '[rdnsd]';
 
 	}
-	$daemon = 1;
 }
 
 #
 # write our PID to a file:
 #
-if (!open(PIDFILE, '>'.$config->{'PidFile'})) {
-	die("Error opening '$config->{'PidFile'}': $!");
+if (!open(PIDFILE, '>'.$CONF->{'PidFile'})) {
+	die("Error opening '$CONF->{'PidFile'}': $!");
 
 } else {
 	print PIDFILE $$."\n";
 	close(PIDFILE);
 
-	debug('wrote %s', $config->{'PidFile'});
+	debug('wrote PID to %s', $CONF->{'PidFile'});
 }
 
 #
-# HUP handler:
+# SIGHUP handler:
 #
 $SIG{'HUP'} = sub {
 	debug('received SIGHUP');
-	$reload = 1;
-	$refresh = 0;
+	$RELOAD = 1;
+	$REFRESH = 0;
 };
 
 #
-# initialise stats update timer
+# initialise update timer
 #
-my $updated = time();
+$UPDATED = time();
+
+#
+# we put statistics data in here
+#
+$STATS = {};
 
 #
 # loop forever:
@@ -167,65 +146,70 @@ my $updated = time();
 debug('entering main loop');
 main_loop() while (1);
 
-exit;
+exit(1);
 
 #
 # main loop function
 #
 sub main_loop {
-	#
-	# refresh server list if necessary
-	#
-	update_serverlist() if ($refresh <= time());
 
 	#
-	# reload config if we've received a SIGHUP
+	# run inside eval to catch fatal errors
 	#
-	load_config() if ($reload);
+	eval {
+		#
+		# refresh server list if necessary
+		#
+		update_serverlist() if ($REFRESH <= time());
 
-	my $t0 = time();
+		#
+		# reload config if we've received a SIGHUP
+		#
+		load_config() if ($RELOAD);
 
-	#
-	# spawn threads
-	#
-	my %threads;
-	foreach my $ns (sort(@servers)) {
-		my @ips = resolve($ns);
-		$threads{$ns} = threads->create(\&time_query, @ips);
-	}
+		my $t0 = time();
 
-	#
-	# gather threads
-	#
-	foreach my $ns (sort(@servers)) {
-		$stats->{$ns}->{'count'}++;
-
-		my $dt = $threads{$ns}->join;
-
-		if (!$dt) {
-			debug('no answer from %s', uc($ns));
-
-		} else {
-			debug('answer received from %s in %ums', uc($ns), 1000 * $dt);
-
-			$stats->{$ns}->{'time'} += $dt;
-			$stats->{$ns}->{'success'}++;
-			push(@{$stats->{$ns}->{'times'}}, $dt);
+		#
+		# spawn threads
+		#
+		my %threads;
+		foreach my $ns (sort(@SERVERS)) {
+			my @ips = resolve($ns);
+			$threads{$ns} = threads->create(\&time_query, @ips);
 		}
+
+		#
+		# gather threads
+		#
+		foreach my $ns (sort(@SERVERS)) {
+			$STATS->{$ns}->{'count'}++;
+
+			my $dt = $threads{$ns}->join;
+
+			if ($dt) {
+				$STATS->{$ns}->{'time'} += $dt;
+				$STATS->{$ns}->{'success'}++;
+				push(@{$STATS->{$ns}->{'times'}}, $dt);
+			}
+		}
+
+		my $dt = (time() - $t0);
+
+		#
+		# sleep if we need to
+		#
+		sleep($CONF->{'Loop'}-$dt) if ($dt < $CONF->{'Loop'});
+
+		#
+		# update stats
+		#
+		update_stats() if (time() - $UPDATED >= $CONF->{'UpdateInterval'});
+	};
+
+	if ($@) {
+		chomp($@);
+		debug($@);
 	}
-
-	my $dt = (time() - $t0);
-	debug('main_loop() completed in %dms', 1000 * $dt);
-
-	#
-	# sleep if we need to
-	#
-	sleep($config->{'Loop'}-$dt) if ($dt < $config->{'Loop'});
-
-	#
-	# update stats
-	#
-	update_stats() if (time() - $updated >= $config->{'UpdateInterval'});
 }
 
 #
@@ -246,13 +230,13 @@ sub time_query {
 	#
 	my $resolver = Net::DNS::Resolver->new;
 	$resolver->retry(0);
-	$resolver->usevc('tcp' eq $config->{'Protocol'});
-	$resolver->udp_timeout($config->{'Timeout'});
-	$resolver->tcp_timeout($config->{'Timeout'});
+	$resolver->usevc('tcp' eq $CONF->{'Protocol'});
+	$resolver->udp_timeout($CONF->{'Timeout'});
+	$resolver->tcp_timeout($CONF->{'Timeout'});
 	$resolver->persistent_udp(0);
 	$resolver->persistent_tcp(0);
-	$resolver->force_v4(4 == $config->{'AddressFamily'});
-	$resolver->force_v6(6 == $config->{'AddressFamily'});
+	$resolver->force_v4(4 == $CONF->{'AddressFamily'});
+	$resolver->force_v6(6 == $CONF->{'AddressFamily'});
 
 	#
 	# specify nameservers
@@ -264,13 +248,18 @@ sub time_query {
 	my $t0 = time();
 
 	#
-	# send query
+	# send query inside an eval to catch errors
 	#
 	eval {
-		$result = $resolver->send($qpacket);
+		$result = $resolver->send($PACKET);
 	};
 
 	my $dt = (time() - $t0);
+
+	if ($@) {
+		chomp($@);
+		debug($@);
+	}
 
 	if (!$result) {
 		return undef;
@@ -288,7 +277,7 @@ sub debug {
 	my ($fmt, @args) = @_;
 	my $message = sprintf($fmt, @args);
 	syslog(LOG_DEBUG, $message);
-	print(STDERR $message."\n") if ($debug);
+	print(STDERR $message."\n") if ($DEBUG);
 }
 
 #
@@ -296,39 +285,40 @@ sub debug {
 # to a SIGHUP:
 #
 sub load_config {
-	debug('loading configuration from %s', $cfile);
+	debug('loading configuration from %s', $CFILE);
 
 	#
 	# get config from config file:
 	#
 	my $ini = Config::Simple->new('syntax' => 'simple');
-	$ini->read($cfile);
+	$ini->read($CFILE);
 
 	#
 	# copy values and set defaults for missing entries
 	#
-	$config->{'UpdateInterval'}	= $ini->param('UpdateInterval')			|| 293;
-	$config->{'PidFile'}		= $ini->param('PidFile')			|| '/var/run/rdnsd/rdnsd.pid';
-	$config->{'Database'}		= $ini->param('Database')			|| '/var/run/rdnsd/rdnsd.sqlite';
-	$config->{'Percentile'}		= $ini->param('Percentile')			|| undef;
-	$config->{'AddressFamily'}	= $ini->param('AddressFamily')			|| 4;
-	$config->{'Protocol'}		= $ini->param('Protocol')			|| 'udp';
-	$config->{'Loop'}		= $ini->param('Loop')				|| 3;
-	$config->{'Timeout'}		= $ini->param('Timeout')			|| 1;
-	$config->{'Recurse'}		= $ini->param('Recurse') eq 'true'		|| undef;
-	$config->{'Question'}		= $ini->param('Question')			|| '. A IN';
-	$config->{'Servers'}		= $ini->param('Servers')			|| undef;
-	$config->{'Domains'}		= $ini->param('Domains')			|| undef;
-	$config->{'StatsFile'}		= $ini->param('StatsFile')			|| undef;
+	$CONF->{'NodeID'}		= $ini->param('NodeID')				|| hostname();
+	$CONF->{'UpdateInterval'}	= $ini->param('UpdateInterval')			|| 293;
+	$CONF->{'PidFile'}		= $ini->param('PidFile')			|| '/var/run/rdnsd/rdnsd.pid';
+	$CONF->{'Database'}		= $ini->param('Database')			|| '/var/run/rdnsd/rdnsd.sqlite';
+	$CONF->{'Percentile'}		= $ini->param('Percentile')			|| undef;
+	$CONF->{'AddressFamily'}	= $ini->param('AddressFamily')			|| 4;
+	$CONF->{'Protocol'}		= $ini->param('Protocol')			|| 'udp';
+	$CONF->{'Loop'}			= $ini->param('Loop')				|| 3;
+	$CONF->{'Timeout'}		= $ini->param('Timeout')			|| 1;
+	$CONF->{'Recurse'}		= $ini->param('Recurse') eq 'true'		|| undef;
+	$CONF->{'Question'}		= $ini->param('Question')			|| '. A IN';
+	$CONF->{'Servers'}		= $ini->param('Servers')			|| undef;
+	$CONF->{'Domains'}		= $ini->param('Domains')			|| undef;
+	$CONF->{'StatsFile'}		= $ini->param('StatsFile')			|| undef;
 
 	#
 	# configure question packet
 	#
-	my @question = split(/\s+/, $config->{'Question'});
-	$qpacket = Net::DNS::Packet->new(@question);
-	$qpacket->header->rd($config->{'Recurse'});
+	my @question = split(/\s+/, $CONF->{'Question'});
+	$PACKET = Net::DNS::Packet->new(@question);
+	$PACKET->header->rd($CONF->{'Recurse'});
 
-	$reload = undef;
+	$RELOAD = undef;
 }
 
 #
@@ -336,33 +326,33 @@ sub load_config {
 # to a SIGHUP, or because a DNS TTL has been reached:
 #
 sub update_serverlist {
-	if ($config->{'Servers'}) {
+	if ($CONF->{'Servers'}) {
 		# statically defined server list, never refresh
-		$refresh = -1;
+		$REFRESH = -1;
 
-		@servers = ('ARRAY' eq ref($config->{'Servers'}) ? @{$config->{'Servers'}} : split(/\s*,\s*/, $config->{'Servers'}));
+		@SERVERS = ('ARRAY' eq ref($CONF->{'Servers'}) ? @{$CONF->{'Servers'}} : split(/\s*,\s*/, $CONF->{'Servers'}));
 
 	} else {
-		@servers = ();
+		@SERVERS = ();
 
 		my $resolver = Net::DNS::Resolver->new;
 
 		#
 		# start with a high value
 		#
-		my $minttl = ~0;
+		my $ttl = ~0;
 
-		my @domains = ('ARRAY' eq ref($config->{'Domains'}) ? @{$config->{'Domains'}} : split(/\s*,\s*/, $config->{'Domains'}));
+		my @domains = ('ARRAY' eq ref($CONF->{'Domains'}) ? @{$CONF->{'Domains'}} : split(/\s*,\s*/, $CONF->{'Domains'}));
 		foreach my $domain (@domains) {
 			my $answer = $resolver->query('_dns._udp.'.$domain, 'SRV');
 			if ($answer) {
 				foreach my $rr (grep { 'SRV' eq $_->type } $answer->answer) {
-					push(@servers, $rr->target);
+					push(@SERVERS, $rr->target);
 
 					#
 					# reduce TTL if we see a lower value
 					#
-					$minttl = $rr->ttl if ($rr->ttl < $minttl);
+					$ttl = $rr->ttl if ($rr->ttl < $ttl);
 				}
 			}
 		}
@@ -372,8 +362,8 @@ sub update_serverlist {
 		# refresh after the shortest TTL observed in the answer
 		# section
 		#
-		$refresh = time() + (scalar(@servers) < 1 ? 60 : $minttl);
-		debug('server list updated; will be refreshed at %s', scalar(localtime($refresh)));
+		$REFRESH = time() + (scalar(@SERVERS) < 1 ? 60 : $ttl);
+		debug('server list updated; will be refreshed at %s', scalar(localtime($REFRESH)));
 	}
 }
 
@@ -382,11 +372,12 @@ sub update_serverlist {
 #
 sub update_stats {
 
-	if ($config->{'Database'}) {
-		if (!$dbh) {
-			$dbh = DBI->connect('dbi:SQLite:dbname='.$config->{'Database'}, '', '', { 'RaiseError' => 1, 'AutoCommit' => 0 });
-			$dbh->do("CREATE TABLE IF NOT EXISTS rdnsd (
+	if ($CONF->{'Database'}) {
+		if (!$DBH) {
+			$DBH = DBI->connect('dbi:SQLite:dbname='.$CONF->{'Database'}, '', '', { 'RaiseError' => 1, 'AutoCommit' => 0 });
+			$DBH->do("CREATE TABLE IF NOT EXISTS rdnsd (
 				id INTEGER NOT NULL PRIMARY KEY,
+				node_id VARCHAR(255) NOT NULL,
 				start_time DATETIME NOT NULL,
 				end_time DATETIME NOT NULL,
 				host VARCHAR(255) NOT NULL,
@@ -394,61 +385,61 @@ sub update_stats {
 				proto CHAR(3) NOT NULL DEFAULT 'udp',
 				count INTEGER NOT NULL,
 				success INTEGER NOT NULL,
-				rate DECIMAL(3,2) NOT NULL,
+				rate DECIMAL NOT NULL,
 				min_time INTEGER NOT NULL,
 				time INTEGER NOT NULL,
 				max_time INTEGER NOT NULL,
 				percentile_time INTEGER DEFAULT NULL
 			)");
-			$dbh->do('CREATE INDEX IF NOT EXISTS host_idx ON rdnsd(host)');
-			$dbh->do('CREATE INDEX IF NOT EXISTS start_time_idx ON rdnsd(start_time)');
-			$dbh->do('CREATE INDEX IF NOT EXISTS end_time_idx ON rdnsd(end_time)');
-			$dbh->do('CREATE INDEX IF NOT EXISTS family_idx ON rdnsd(family)');
-			$dbh->do('CREATE INDEX IF NOT EXISTS proto_idx ON rdnsd(proto)');
+			$DBH->do('CREATE INDEX IF NOT EXISTS host_idx ON rdnsd(host)');
+			$DBH->do('CREATE INDEX IF NOT EXISTS start_time_idx ON rdnsd(start_time)');
+			$DBH->do('CREATE INDEX IF NOT EXISTS end_time_idx ON rdnsd(end_time)');
+			$DBH->do('CREATE INDEX IF NOT EXISTS family_idx ON rdnsd(family)');
+			$DBH->do('CREATE INDEX IF NOT EXISTS proto_idx ON rdnsd(proto)');
 
-			$sth = $dbh->prepare('INSERT
-						INTO rdnsd (start_time, end_time, host, family, proto, count, success, rate, min_time, time, max_time, percentile_time)
-						VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+			$STH = $DBH->prepare('INSERT
+						INTO rdnsd (node_id, start_time, end_time, host, family, proto, count, success, rate, min_time, time, max_time, percentile_time)
+						VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
 
-			debug('initialised database in %s', $config->{'Database'});
+			debug('initialised database in %s', $CONF->{'Database'});
 		}
 
-	} elsif ($dbh) {
+	} elsif ($DBH) {
 		#
 		# disconnect from the database
 		#
-		$dbh->disconnect;
-		undef($dbh);
-		undef($sth) if ($sth);
+		$DBH->disconnect;
+		undef($DBH);
+		undef($STH) if ($STH);
 
 	}
 
 	my $fh;
-	if ($config->{'StatsFile'}) {
-		$fh = IO::File->new($config->{'StatsFile'}, 'w');
+	if ($CONF->{'StatsFile'}) {
+		$fh = IO::File->new($CONF->{'StatsFile'}, 'w');
 	}
 
-	foreach my $ns (sort(@servers)) {
+	foreach my $ns (sort(@SERVERS)) {
 
 		#
 		# no stats for this server, ignore it
 		#
-		next if ($stats->{$ns}->{'count'} < 1);
+		next if ($STATS->{$ns}->{'count'} < 1);
 
 		#
 		# compute success rate and average RTT
 		#
-		my $rate = ($stats->{$ns}->{'success'} / $stats->{$ns}->{'count'});
-		my $time = floor(1000 * $stats->{$ns}->{'time'} / $stats->{$ns}->{'count'});
+		my $rate = ($STATS->{$ns}->{'success'} / $STATS->{$ns}->{'count'});
+		my $time = floor(1000 * $STATS->{$ns}->{'time'} / $STATS->{$ns}->{'count'});
 
-		my @times = ($rate > 0 ? sort(@{$stats->{$ns}->{'times'}}) : ());
+		my @times = ($rate > 0 ? sort(@{$STATS->{$ns}->{'times'}}) : ());
 
 		my $ptime;
-		if ($config->{'Percentile'}) {
+		if ($CONF->{'Percentile'}) {
 			#
 			# find the position in the array which corresponds to the percentile
 			#
-			my $pos = floor(scalar(@times) * $config->{'Percentile'} / 100) - 1;
+			my $pos = floor(scalar(@times) * $CONF->{'Percentile'} / 100) - 1;
 
 			#
 			# compute percentile time
@@ -459,15 +450,16 @@ sub update_stats {
 		#
 		# insert into database
 		#
-		if ($sth) {
-			$sth->execute(
-				lc($ns),
-				strftime('%Y-%m-%d %H:%M:%S', localtime($updated)),	# times are in the system's configured time zone
+		if ($STH) {
+			$STH->execute(
+				lc($CONF->{'NodeID'}),
+				strftime('%Y-%m-%d %H:%M:%S', localtime($UPDATED)),	# times are in the system's configured time zone
 				strftime('%Y-%m-%d %H:%M:%S', localtime(time())),	# times are in the system's configured time zone
-				int($config->{'AddressFamily'}),
-				lc($config->{'Protocol'}),
-				int($stats->{$ns}->{'count'}),
-				int($stats->{$ns}->{'success'}),
+				lc($ns),
+				int($CONF->{'AddressFamily'}),
+				lc($CONF->{'Protocol'}),
+				int($STATS->{$ns}->{'count'}),
+				int($STATS->{$ns}->{'success'}),
 				sprintf('%f', $rate),
 				int(1000 * min(@times)),
 				int($time),
@@ -490,9 +482,9 @@ sub update_stats {
 	#
 	# commit changes
 	#
-	if ($dbh) {
-		$dbh->commit;
-		debug("updated '%s'", $config->{'Database'});
+	if ($DBH) {
+		$DBH->commit;
+		debug("updated '%s'", $CONF->{'Database'});
 	}
 
 	#
@@ -500,15 +492,15 @@ sub update_stats {
 	#
 	if ($fh) {
 		$fh->close;
-		debug("wrote stats to '%s'", $config->{'StatsFile'});
+		debug("wrote stats to '%s'", $CONF->{'StatsFile'});
 	}
 
 	#
 	# reset timer and stats
 	#
-	if ($dbh || $fh) {
-		$updated = time();
-		$stats = {};
+	if ($DBH || $fh) {
+		$UPDATED = time();
+		$STATS = {};
 	}
 }
 
@@ -528,7 +520,7 @@ sub resolve {
 		return ($name);
 
 	} else {
-		if (!defined($cache->{$name}->{$type}) || $cache->{$name}->{$type}->{'expires'} < time()) {
+		if (!defined($CACHE->{$name}->{$type}) || $CACHE->{$name}->{$type}->{'expires'} < time()) {
 			my $resolver = Net::DNS::Resolver->new;
 			my $answer = $resolver->query($name.'.', $type);
 			if ($answer) {
@@ -538,8 +530,7 @@ sub resolve {
 				my $minttl = ~0;
 
 				my @addrs;
-				foreach my $rr (grep { $type eq $_->type} $answer->answer) {
-					debug('address %s for %s expires in %us', $rr->address, $name, $rr->ttl);
+				foreach my $rr (grep { $type eq $_->type } $answer->answer) {
 					#
 					# add address to list
 					#
@@ -556,7 +547,7 @@ sub resolve {
 				# store address data (and expiry time)
 				# in cache
 				#
-				$cache->{$name}->{$type} = {
+				$CACHE->{$name}->{$type} = {
 					'addrs'   => \@addrs,
 					'expires' => time() + $minttl,
 				}
@@ -564,8 +555,8 @@ sub resolve {
 			} else {
 				debug("unable to resolve '%s'", $name);
 
-				if (!defined($cache->{$name}->{$type})) {
-					$cache->{$name}->{$type} = {
+				if (!defined($CACHE->{$name}->{$type})) {
+					$CACHE->{$name}->{$type} = {
 						'addrs'   => [],
 						'expires' => time(),
 					}
@@ -573,7 +564,7 @@ sub resolve {
 			}
 		}
 
-		return @{$cache->{$name}->{$type}->{'addrs'}};
+		return @{$CACHE->{$name}->{$type}->{'addrs'}};
 	}
 }
 
@@ -590,7 +581,7 @@ rdnsd is a remote DNS server monitoring system.
 C<rdnsd> can be used to monitor the availability and responsiveness of
 remote DNS servers. Given a list of DNS servers, it will periodically
 query each server and record whether a response was received, and how
-quickly. This information can then be queried by querying an SQLite
+quickly. This information can then be obtained by querying an SQLite
 database.
 
 =head1 USAGE
@@ -599,7 +590,7 @@ database.
 
 =head1 OPTIONS
 
-The following command line options are supported.
+The following command line options are supported:
 
 =over
 
@@ -622,6 +613,7 @@ information to STDERR.
 C<rdnsd> must be configured using a configuration file. The following
 is an example:
 
+	NodeID		my-node-id
 	UpdateInterval	293
 	PidFile		/var/run/rdnsd/rdnsd.pid
 	Database	/var/run/rdnsd/rdnsd.db
@@ -638,6 +630,16 @@ is an example:
 The directives are explained below.
 
 =over
+
+=item * C<NodeID ID>
+
+Default: C<$HOSTNAME>
+
+This value is insterted into the `node_id` column of stats database. It
+disambiguates the source of each row, allowing data from multiple
+monitoring nodes to be aggregated losslessly.
+
+If not set, the system's host name is used.
 
 =item * C<UpdateInterval TIME>
 
@@ -666,9 +668,11 @@ named C<rdnsd>, which will contain the following columns:
 
 =item * C<id> - unique row ID
 
-=item * C<start_time> - date/time the monitoring interval began
+=item * C<node_id> - node ID/hostname
 
-=item * C<ends_time> - date/time the monitoring interval ended
+=item * C<start_time> - date+time the monitoring interval began
+
+=item * C<ends_time> - date+time the monitoring interval ended
 
 =item * C<host> - server name
 
@@ -680,7 +684,7 @@ named C<rdnsd>, which will contain the following columns:
 
 =item * C<success> - number of successful queries
 
-=item * C<rate> - response rate as a decimal (0.00 - 1.00) (equivalent
+=item * C<rate> - response rate as a decimal between 0 and 1 (equivalent
 to C<success / rate>)
 
 =item * C<min_time> - lowest observed RTT in milliseconds
@@ -774,11 +778,11 @@ directive.
 
 Default: none
 
-B<Note:> this is a legacy option to provide backwards compatibility.
+B<Note:> this is a legacy option to provide backwards compatibility with
+older versions of C<rdnsd>. It specifies a file to which C<rdnsd> will
+write statistics.
 
-It specifies a file to which C<rdnsd> will write statistics.
-
-See L<OBTAINING STATISTICS> for further information.
+See L<LEGACY STATISTICS FILE FORMAT> for further information.
 
 =back
 
@@ -797,12 +801,17 @@ C<StatsFile>.
 Once the database has been updated, C<rdnsd>'s internal data is reset,
 so subsequent signals will produce fresh statistical data.
 
-=head2 (LEGACY) STATISTICS FILE FORMAT
+=head2 LEGACY STATISTICS FILE FORMAT
 
-The (legacy) statistics file will contain one line for each server that
-is being checked. Each line contains the nameserver checked, the
-response rate as a decimal fraction, and the average response time (in
-milliseconds), for example:
+Older versions of C<rdnsd> used a flat file format for statistics, which
+would be updated every C<UpdateInterval> seconds, or when C<rdnsd>
+received the C<USR1> signal. This behaviour is now deprecated in favour
+of the SQLite database, but is still supported for backwards
+compatibility.
+
+The statistics file will contain one line for each server. Each line
+contains the nameserver checked, the response rate as a decimal
+fraction, and the average response time (in milliseconds), for example:
 
 	ns0.example.com 1.00 25
 
@@ -814,11 +823,6 @@ the end of the line:
 
 This value is the response time (in milliseconds) at the given
 percentile.
-
-Note that C<rdnsd> will not I<immediately> update the file upon
-receiving the C<USR1> signal. You need to wait up to C<Loop> seconds
-for the current loop iteration to complete before the stats file is
-updated.
 
 =head1 SEE ALSO
 

@@ -7,7 +7,7 @@ rdnsd is a remote DNS server monitoring system.
 `rdnsd` can be used to monitor the availability and responsiveness of
 remote DNS servers. Given a list of DNS servers, it will periodically
 query each server and record whether a response was received, and how
-quickly. This information can then be queried by querying an SQLite
+quickly. This information can then be obtained by querying an SQLite
 database.
 
 # USAGE
@@ -16,7 +16,7 @@ database.
 
 # OPTIONS
 
-The following command line options are supported.
+The following command line options are supported:
 
 - `--help`
 
@@ -37,6 +37,7 @@ The following command line options are supported.
 `rdnsd` must be configured using a configuration file. The following
 is an example:
 
+        NodeID          my-node-id
         UpdateInterval  293
         PidFile         /var/run/rdnsd/rdnsd.pid
         Database        /var/run/rdnsd/rdnsd.db
@@ -51,6 +52,16 @@ is an example:
         Domains         example.com
 
 The directives are explained below.
+
+- `NodeID ID`
+
+    Default: `$HOSTNAME`
+
+    This value is insterted into the \`node\_id\` column of stats database. It
+    disambiguates the source of each row, allowing data from multiple
+    monitoring nodes to be aggregated losslessly.
+
+    If not set, the system's host name is used.
 
 - `UpdateInterval TIME`
 
@@ -76,14 +87,15 @@ The directives are explained below.
     named `rdnsd`, which will contain the following columns:
 
     - `id` - unique row ID
-    - `start_time` - date/time the monitoring interval began
-    - `ends_time` - date/time the monitoring interval ended
+    - `node_id` - node ID/hostname
+    - `start_time` - date+time the monitoring interval began
+    - `ends_time` - date+time the monitoring interval ended
     - `host` - server name
     - `family` - IP version (4 or 6)
     - `proto` - transport protocol (UDP or TCP)
     - `count` - number of queries sent to the server
     - `success` - number of successful queries
-    - `rate` - response rate as a decimal (0.00 - 1.00) (equivalent
+    - `rate` - response rate as a decimal between 0 and 1 (equivalent
     to `success / rate`)
     - `min_time` - lowest observed RTT in milliseconds
     - `time` - average RTT in milliseconds
@@ -171,11 +183,11 @@ The directives are explained below.
 
     Default: none
 
-    **Note:** this is a legacy option to provide backwards compatibility.
+    **Note:** this is a legacy option to provide backwards compatibility with
+    older versions of `rdnsd`. It specifies a file to which `rdnsd` will
+    write statistics.
 
-    It specifies a file to which `rdnsd` will write statistics.
-
-    See ["OBTAINING STATISTICS"](#obtaining-statistics) for further information.
+    See ["LEGACY STATISTICS FILE FORMAT"](#legacy-statistics-file-format) for further information.
 
 # RELOADING CONFIGURATION
 
@@ -192,12 +204,17 @@ database specified by `Database`, and, if set, the file specified by
 Once the database has been updated, `rdnsd`'s internal data is reset,
 so subsequent signals will produce fresh statistical data.
 
-## (LEGACY) STATISTICS FILE FORMAT
+## LEGACY STATISTICS FILE FORMAT
 
-The (legacy) statistics file will contain one line for each server that
-is being checked. Each line contains the nameserver checked, the
-response rate as a decimal fraction, and the average response time (in
-milliseconds), for example:
+Older versions of `rdnsd` used a flat file format for statistics, which
+would be updated every `UpdateInterval` seconds, or when `rdnsd`
+received the `USR1` signal. This behaviour is now deprecated in favour
+of the SQLite database, but is still supported for backwards
+compatibility.
+
+The statistics file will contain one line for each server. Each line
+contains the nameserver checked, the response rate as a decimal
+fraction, and the average response time (in milliseconds), for example:
 
         ns0.example.com 1.00 25
 
@@ -209,11 +226,6 @@ the end of the line:
 
 This value is the response time (in milliseconds) at the given
 percentile.
-
-Note that `rdnsd` will not _immediately_ update the file upon
-receiving the `USR1` signal. You need to wait up to `Loop` seconds
-for the current loop iteration to complete before the stats file is
-updated.
 
 # SEE ALSO
 
@@ -230,6 +242,6 @@ the same terms as Perl itself.
 
 Hey! **The above document had some coding errors, which are explained below:**
 
-- Around line 620:
+- Around line 611:
 
     You forgot a '=back' before '=head1'

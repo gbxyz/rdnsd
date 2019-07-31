@@ -18,6 +18,7 @@ WriteMakefile(
 		'Net::DNS'		=> 0,
 		'POSIX'			=> 0,
 		'Pod::Usage'		=> 0,
+		'Sys::Hostname'		=> 0,
 		'Sys::Syslog'		=> 0,
 		'Time::HiRes'		=> 0,
 	},
