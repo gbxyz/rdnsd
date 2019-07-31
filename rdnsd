@@ -169,12 +169,16 @@ sub main_loop {
 
 		my $t0 = time();
 
-		#
-		# spawn threads
-		#
 		my %threads;
 		foreach my $ns (sort(@SERVERS)) {
+			#
+			# resolve nameserver to IP addresses in the main thread
+			#
 			my @ips = resolve($ns, $CONF->{'AddressFamily'});
+
+			#
+			# spawn thread
+			#
 			$threads{$ns} = threads->create(\&time_query, ($CONF->{'AddressFamily'}, $CONF->{'Protocol'}, , @ips));
 		}
 
@@ -193,17 +197,17 @@ sub main_loop {
 			}
 		}
 
+		#
+		# update stats
+		#
+		update_stats() if (time() - $UPDATED >= $CONF->{'UpdateInterval'});
+
 		my $dt = (time() - $t0);
 
 		#
 		# sleep if we need to
 		#
 		sleep($CONF->{'Loop'}-$dt) if ($dt < $CONF->{'Loop'});
-
-		#
-		# update stats
-		#
-		update_stats() if (time() - $UPDATED >= $CONF->{'UpdateInterval'});
 	};
 
 	if ($@) {
