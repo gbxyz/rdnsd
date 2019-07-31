@@ -175,7 +175,7 @@ sub main_loop {
 		my %threads;
 		foreach my $ns (sort(@SERVERS)) {
 			my @ips = resolve($ns);
-			$threads{$ns} = threads->create(\&time_query, @ips);
+			$threads{$ns} = threads->create(\&time_query, ($CONF->{'AddressFamily'}, $CONF->{'Protocol'}, , @ips));
 		}
 
 		#
@@ -221,7 +221,7 @@ sub main_loop {
 # the RTT will erroneously include the time taken to resolve the name
 #
 sub time_query {
-	my @servers = @_;
+	my ($family, $proto, @servers) = @_;
 
 	return undef if (scalar(@servers) < 1);
 
@@ -230,13 +230,14 @@ sub time_query {
 	#
 	my $resolver = Net::DNS::Resolver->new;
 	$resolver->retry(0);
-	$resolver->usevc('tcp' eq $CONF->{'Protocol'});
+	$resolver->igntc(1);
+	$resolver->usevc('tcp' eq $proto);
 	$resolver->udp_timeout($CONF->{'Timeout'});
 	$resolver->tcp_timeout($CONF->{'Timeout'});
 	$resolver->persistent_udp(0);
 	$resolver->persistent_tcp(0);
-	$resolver->force_v4(4 == $CONF->{'AddressFamily'});
-	$resolver->force_v6(6 == $CONF->{'AddressFamily'});
+	$resolver->force_v4(4 == $family);
+	$resolver->force_v6(6 == $family);
 
 	#
 	# specify nameservers
