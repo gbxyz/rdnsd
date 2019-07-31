@@ -174,7 +174,7 @@ sub main_loop {
 		#
 		my %threads;
 		foreach my $ns (sort(@SERVERS)) {
-			my @ips = resolve($ns);
+			my @ips = resolve($ns, $CONF->{'AddressFamily'});
 			$threads{$ns} = threads->create(\&time_query, ($CONF->{'AddressFamily'}, $CONF->{'Protocol'}, , @ips));
 		}
 
