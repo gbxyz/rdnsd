@@ -12,7 +12,7 @@ database.
 
 # USAGE
 
-        C<rdnsd> OPTIONS
+        rdnsd [--help|--config=/etc/rdnsd/rdns.conf [--debug]]
 
 # OPTIONS
 

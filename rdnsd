@@ -609,7 +609,7 @@ database.
 
 =head1 USAGE
 
-	C<rdnsd> OPTIONS
+	rdnsd [--help|--config=/etc/rdnsd/rdns.conf [--debug]]
 
 =head1 OPTIONS
 
