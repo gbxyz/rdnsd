@@ -80,11 +80,15 @@ The directives are explained below.
 
 - `Database FILE`
 
-    Default: `/var/run/rdnsd/rdnsd.sqlite`
+    Default: none
 
-    If set, `rdnsd` will create an SQLite database at the specified file
-    and write statistics to it. The database will contain a single table
-    named `rdnsd`, which will contain the following columns:
+    `rdnsd` will create an SQLite database at the specified file and
+    write statistics to it. If the database already exists, the
+    database structure must be compatible with the SQL `INSERT`
+    statement `rdnsd` uses to insert data.
+
+    The database will contain a single table named `rdnsd`, which
+    will contain the following columns:
 
     - `id` - unique row ID
     - `node_id` - node ID/hostname

@@ -15,7 +15,7 @@ use Sys::Hostname;
 use Sys::Syslog qw(:standard :macros);
 use Time::HiRes qw(time sleep);
 use threads;
-use vars qw($VERSION $CFILE $DEBUG $HELP $PACKET $CONF @SERVERS $RELOAD $REFRESH $CACHE $STATS $DBH $STH $UPDATED);
+use vars qw($VERSION $CFILE $DEBUG $HELP $PACKET $CONF @SERVERS $RELOAD $REFRESH $CACHE $STATS $UPDATED);
 use strict;
 
 $VERSION = '0.10';
@@ -72,6 +72,8 @@ if (!$CONF->{'Database'} && !$CONF->{'StatsFile'}) {
 		(3 * $CONF->{'Loop'} * $CONF->{'Timeout'})
 	));
 }
+
+initialise_database() if ($CONF->{'Database'});
 
 #
 # configure logging
@@ -304,7 +306,7 @@ sub load_config {
 	$CONF->{'NodeID'}		= $ini->param('NodeID')			|| hostname();
 	$CONF->{'UpdateInterval'}	= $ini->param('UpdateInterval')		|| 293;
 	$CONF->{'PidFile'}		= $ini->param('PidFile')		|| '/var/run/rdnsd/rdnsd.pid';
-	$CONF->{'Database'}		= $ini->param('Database')		|| '/var/run/rdnsd/rdnsd.sqlite';
+	$CONF->{'Database'}		= $ini->param('Database')		|| undef;
 	$CONF->{'Percentile'}		= $ini->param('Percentile')		|| undef;
 	$CONF->{'AddressFamily'}	= $ini->param('AddressFamily')		|| 4;
 	$CONF->{'Protocol'}		= $ini->param('Protocol')		|| 'udp';
@@ -377,17 +379,13 @@ sub update_serverlist {
 #
 sub update_stats {
 
+	my ($db, $sth);
 	if ($CONF->{'Database'}) {
-		initialise_database() if (!$DBH);
+		$db = db_connect();
 
-	} elsif ($DBH) {
-		#
-		# disconnect from the database
-		#
-		$DBH->disconnect;
-		undef($DBH);
-		undef($STH) if ($STH);
-
+		$sth = $db->prepare('INSERT INTO rdnsd
+					(node_id, start_time, end_time, host, family, proto, count, success, rate, min_time, time, max_time, percentile_time)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
 	}
 
 	my $fh;
@@ -426,8 +424,8 @@ sub update_stats {
 		#
 		# insert into database
 		#
-		if ($STH) {
-			$STH->execute(
+		if ($sth) {
+			$sth->execute(
 				lc($CONF->{'NodeID'}),
 				strftime('%Y-%m-%d %H:%M:%S', localtime($UPDATED)),	# times are in the system's configured time zone
 				strftime('%Y-%m-%d %H:%M:%S', localtime(time())),	# times are in the system's configured time zone
@@ -458,8 +456,9 @@ sub update_stats {
 	#
 	# commit changes
 	#
-	if ($DBH) {
-		$DBH->commit;
+	if ($db) {
+		$db->commit;
+		$db->disconnect;
 		debug("updated '%s'", $CONF->{'Database'});
 	}
 
@@ -474,22 +473,26 @@ sub update_stats {
 	#
 	# reset timer and stats
 	#
-	if ($DBH || $fh) {
+	if ($db || $fh) {
 		$UPDATED = time();
 		$STATS = {};
 	}
+}
+
+sub db_connect {
+	return DBI->connect('dbi:SQLite:dbname='.$CONF->{'Database'}, '', '', { 'RaiseError' => 1, 'AutoCommit' => 0 });
 }
 
 sub initialise_database {
 	#
 	# initialise database connection
 	#
-	$DBH = DBI->connect('dbi:SQLite:dbname='.$CONF->{'Database'}, '', '', { 'RaiseError' => 1, 'AutoCommit' => 0 });
+	my $db = db_connect();
 
 	#
 	# create table
 	#
-	$DBH->do("CREATE TABLE IF NOT EXISTS rdnsd (
+	$db->do("CREATE TABLE IF NOT EXISTS rdnsd (
 		id		INTEGER NOT NULL PRIMARY KEY,
 		node_id		VARCHAR(255) NOT NULL,
 		start_time	DATETIME NOT NULL,
@@ -509,18 +512,15 @@ sub initialise_database {
 	#
 	# create indexes
 	#
-	$DBH->do('CREATE INDEX IF NOT EXISTS host_idx		ON rdnsd(host)');
-	$DBH->do('CREATE INDEX IF NOT EXISTS start_time_idx	ON rdnsd(start_time)');
-	$DBH->do('CREATE INDEX IF NOT EXISTS end_time_idx	ON rdnsd(end_time)');
-	$DBH->do('CREATE INDEX IF NOT EXISTS family_idx		ON rdnsd(family)');
-	$DBH->do('CREATE INDEX IF NOT EXISTS proto_idx		ON rdnsd(proto)');
+	$db->do('CREATE INDEX IF NOT EXISTS host_idx		ON rdnsd(host)');
+	$db->do('CREATE INDEX IF NOT EXISTS start_time_idx	ON rdnsd(start_time)');
+	$db->do('CREATE INDEX IF NOT EXISTS end_time_idx	ON rdnsd(end_time)');
+	$db->do('CREATE INDEX IF NOT EXISTS family_idx		ON rdnsd(family)');
+	$db->do('CREATE INDEX IF NOT EXISTS proto_idx		ON rdnsd(proto)');
 
-	#
-	# prepare INSERT statement
-	#
-	$STH = $DBH->prepare('INSERT
-				INTO rdnsd (node_id, start_time, end_time, host, family, proto, count, success, rate, min_time, time, max_time, percentile_time)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+	$db->commit;
+
+	$db->disconnect();
 
 	debug('initialised database in %s', $CONF->{'Database'});
 }
@@ -683,11 +683,15 @@ The file where C<rdnsd> will write its pid.
 
 =item * C<Database FILE>
 
-Default: C</var/run/rdnsd/rdnsd.sqlite>
+Default: none
 
-If set, C<rdnsd> will create an SQLite database at the specified file
-and write statistics to it. The database will contain a single table
-named C<rdnsd>, which will contain the following columns:
+C<rdnsd> will create an SQLite database at the specified file and
+write statistics to it. If the database already exists, the
+database structure must be compatible with the SQL C<INSERT>
+statement C<rdnsd> uses to insert data.
+
+The database will contain a single table named C<rdnsd>, which
+will contain the following columns:
 
 =over
 
