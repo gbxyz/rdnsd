@@ -936,8 +936,6 @@ write statistics.
 
 See L<LEGACY STATISTICS FILE FORMAT> for further information.
 
-=back
-
 =head1 RELOADING THE CONFIGURATION FILE
 
 C<rdnsd> will reload its configuration if you send it a C<SIGHUP>:

@@ -53,147 +53,177 @@ is an example:
 
 The directives are explained below.
 
-- `NodeID ID`
+## `NodeID ID`
 
-    Default: `$HOSTNAME`
+Default: `$HOSTNAME`
 
-    This value is insterted into the \`node\_id\` column of stats database. It
-    disambiguates the source of each row, allowing data from multiple
-    monitoring nodes to be aggregated losslessly.
+This value is insterted into the \`node\_id\` column of stats database. It
+disambiguates the source of each row, allowing data from multiple
+monitoring nodes to be aggregated losslessly.
 
-    If not set, the system's host name is used.
+If not set, the system's host name is used.
 
-- `UpdateInterval TIME`
+## `UpdateInterval TIME`
 
-    Default: `293`
+Default: `293`
 
-    This parameter tells `rdnsd` to automatically update the statistics
-    database every `TIME` seconds. This value **MUST** be more than
-    `Loop x Timeout` seconds, and **SHOULD** be at least three times that
-    value.
+This parameter tells `rdnsd` to automatically update the statistics
+database every `TIME` seconds. This value **MUST** be more than
+`Loop x Timeout` seconds, and **SHOULD** be at least three times that
+value.
 
-- `PidFile /path/to/pid/file`
+## `PidFile /path/to/pid/file`
 
-    Default: `/var/run/rdnsd/rdnsd.pid`
+Default: `/var/run/rdnsd/rdnsd.pid`
 
-    The file where `rdnsd` will write its pid.
+The file where `rdnsd` will write its pid.
 
-- `Database FILE`
+## `Database FILE`
 
-    Default: none
+Default: none
 
-    `rdnsd` will create an SQLite database at the specified file and
-    write statistics to it. If the database already exists, the
-    database structure must be compatible with the SQL `INSERT`
-    statement `rdnsd` uses to insert data.
+The `Database` directive can take two forms:
 
-    The database will contain a single table named `rdnsd`, which
-    will contain the following columns:
+- the path to an SQLite database on disk
+- a [DBI](https://metacpan.org/pod/DBI) DSN
 
-    - `id` - unique row ID
-    - `node_id` - node ID/hostname
-    - `start_time` - date+time the monitoring interval began
-    - `ends_time` - date+time the monitoring interval ended
-    - `host` - server name
-    - `family` - IP version (4 or 6)
-    - `proto` - transport protocol (UDP or TCP)
-    - `count` - number of queries sent to the server
-    - `success` - number of successful queries
-    - `rate` - response rate as a decimal between 0 and 1 (equivalent
-    to `success / rate`)
-    - `min_time` - lowest observed RTT in milliseconds
-    - `time` - average RTT in milliseconds
-    - `time` - highest observed RTT in milliseconds
-    - `percentile_time` - average RTT in milliseconds at the
-    configured percentile.
+If the value of the `Database` directive looks like a DSN (i.e.
+it begins with `dbi:`) then `rdnsd` will use the authentication
+credentials specified in by the `DBUsername` and `DBPassword`
+directives.
 
-- `Percentile PERCENTILE`
+On startup, `rdnsd` will attempt to connect to the specified
+database and will create the `rdnsd` table. Because each RDBMS
+has its own syntax for creating tables, only SQLite and MySQL
+databases are currently supported (support for other databases
+is easy to add, so submit a patch!)
 
-    Default: none
+The database will contain a single, which will contain the
+following columns. The name of the table is determined by the
+`DTable` directive.
 
-    If this option is set, `rdnsd` will calculate the response time at the
-    given percentile.
+- `id` - unique row ID
+- `node_id` - node ID/hostname
+- `start_time` - date+time the monitoring interval began
+- `ends_time` - date+time the monitoring interval ended
+- `host` - server name
+- `family` - IP version (4 or 6)
+- `proto` - transport protocol (UDP or TCP)
+- `count` - number of queries sent to the server
+- `success` - number of successful queries
+- `rate` - response rate as a decimal between 0 and 1 (equivalent
+to `success / rate`)
+- `min_time` - lowest observed RTT in milliseconds
+- `time` - average RTT in milliseconds
+- `time` - highest observed RTT in milliseconds
+- `percentile_time` - average RTT in milliseconds at the
+configured percentile.
 
-- `AddressFamily (4|6)`
+## `DBUsername USERNAME`
 
-    Default: `4`
+Default: none
 
-    Specifies whether to prefer IPv4 or IPv6 when talking to nameservers, if
-    the servers are identified by name rather than address (or when loaded
-    from SRV records). If not defined, the default behaviour is to prefer
-    IPv4.
+Specifies the username for database authentication.
 
-- `Protocol (udp|tcp)`
+## `DBPassword PASSWORD`
 
-    Default: `udp`
+Default: none
 
-    Specify the transport protocol (UDP or TCP) to use.
+Specifies the password for database authentication.
 
-- `Loop SECONDS`
+## `DBTable TABLE`
 
-    Default: `3`
+Default: `rdnsd`
 
-    This specifies the length of the main loop. If this is set to 2, then
-    each server will be checked every 2 seconds. This value can be a decimal
-    fraction, eg 0.25.
+Specifies the name of the table that `rdnsd` will use.
 
-- `Timeout SECONDS`
+## `Percentile PERCENTILE`
 
-    Default: `1`
+Default: none
 
-    This specifies the timeout for DNS queries. A server will be considered
-    down if it does not respond within this amount of time. This value
-    **MUST** be less than the value of `Loop`.
+If this option is set, `rdnsd` will calculate the response time at the
+given percentile.
 
-- `Recurse (true|false)`
+## `AddressFamily (4|6)`
 
-    Default: `false`
+Default: `4`
 
-    Enable recursion (i.e. set the \`rd\` bit on the queries sent to servers).
+Specifies whether to prefer IPv4 or IPv6 when talking to nameservers, if
+the servers are identified by name rather than address (or when loaded
+from SRV records). If not defined, the default behaviour is to prefer
+IPv4.
 
-- `Question QUESTION`
+## `Protocol (udp|tcp)`
 
-    Default: `example.com. IN A`
+Default: `udp`
 
-    Specify the DNS question. The format is "QNAME QCLASS QTYPE".
+Specify the transport protocol (UDP or TCP) to use.
 
-- `Servers SERVERS`
+## `Loop SECONDS`
 
-    Default: none
+Default: `3`
 
-    Specify the servers to be checked. You can either specify a server name
-    (which will be resolved to a set of IP addresses), or literal IPv4 or
-    IPv6 addresses.
+This specifies the length of the main loop. If this is set to 2, then
+each server will be checked every 2 seconds. This value can be a decimal
+fraction, eg 0.25.
 
-    This directive can't be used at the same time as the `Domains`
-    directive.
+## `Timeout SECONDS`
 
-- `Domains DOMAINS`
+Default: `1`
 
-    Default: none
+This specifies the timeout for DNS queries. A server will be considered
+down if it does not respond within this amount of time. This value
+**MUST** be less than the value of `Loop`.
 
-    Rather than specifying a list of nameservers, you can provide a list of
-    domains instead. For each domain, `rdnsd` will query for `SRV` records
-    for `_dns._udp` under the domain and use the targets of any `SRV`
-    records returned.
+## `Recurse (true|false)`
 
-    The server list will be updated when the TTL on the `SRV` records
-    expires.
+Default: `false`
 
-    This directive can't be used at the same time as the `Servers`
-    directive.
+Enable recursion (i.e. set the \`rd\` bit on the queries sent to servers).
 
-- `StatsFile /path/to/stats/file`
+## `Question QUESTION`
 
-    Default: none
+Default: `example.com. IN A`
 
-    **Note:** this is a legacy option to provide backwards compatibility with
-    older versions of `rdnsd`. It specifies a file to which `rdnsd` will
-    write statistics.
+Specify the DNS question. The format is "QNAME QCLASS QTYPE".
 
-    See ["LEGACY STATISTICS FILE FORMAT"](#legacy-statistics-file-format) for further information.
+## `Servers SERVERS`
 
-# RELOADING CONFIGURATION
+Default: none
+
+Specify the servers to be checked. You can either specify a server name
+(which will be resolved to a set of IP addresses), or literal IPv4 or
+IPv6 addresses.
+
+This directive can't be used at the same time as the `Domains`
+directive.
+
+## `Domains DOMAINS`
+
+Default: none
+
+Rather than specifying a list of nameservers, you can provide a list of
+domains instead. For each domain, `rdnsd` will query for `SRV` records
+for `_dns._udp` under the domain and use the targets of any `SRV`
+records returned.
+
+The server list will be updated when the TTL on the `SRV` records
+expires.
+
+This directive can't be used at the same time as the `Servers`
+directive.
+
+## `StatsFile /path/to/stats/file`
+
+Default: none
+
+**Note:** this is a legacy option to provide backwards compatibility with
+older versions of `rdnsd`. It specifies a file to which `rdnsd` will
+write statistics.
+
+See ["LEGACY STATISTICS FILE FORMAT"](#legacy-statistics-file-format) for further information.
+
+# RELOADING THE CONFIGURATION FILE
 
 `rdnsd` will reload its configuration if you send it a `SIGHUP`:
 
@@ -201,7 +231,7 @@ The directives are explained below.
 
 # OBTAINING STATISTICS
 
-Every `UpdateInterval` seconds, `rdnsd` will write stats to the SQLite
+Every `UpdateInterval` seconds, `rdnsd` will write stats to the
 database specified by `Database`, and, if set, the file specified by
 `StatsFile`.
 
@@ -213,8 +243,7 @@ so subsequent signals will produce fresh statistical data.
 Older versions of `rdnsd` used a flat file format for statistics, which
 would be updated every `UpdateInterval` seconds, or when `rdnsd`
 received the `USR1` signal. This behaviour is now deprecated in favour
-of the SQLite database, but is still supported for backwards
-compatibility.
+of a database, but is still supported for backwards compatibility.
 
 The statistics file will contain one line for each server. Each line
 contains the nameserver checked, the response rate as a decimal
