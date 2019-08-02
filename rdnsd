@@ -15,12 +15,13 @@ use Sys::Hostname;
 use Sys::Syslog qw(:standard :macros);
 use Time::HiRes qw(time sleep);
 use threads;
+use constant NAME => 'rdnsd';
 use vars qw($VERSION $CFILE $DEBUG $HELP $PACKET $CONF @SERVERS $RELOAD $REFRESH $CACHE $STATS $UPDATED);
 use strict;
 
 $VERSION = '0.10';
 
-$CFILE = '/etc/rdnsd/rdnsd.conf';
+$CFILE = sprintf('/etc/%s/%s.conf', NAME, NAME);
 
 #
 # get config from command line:
@@ -78,10 +79,10 @@ initialise_database() if ($CONF->{'Database'});
 #
 # configure logging
 #
-openlog('rdnsd', 'pid', LOG_DAEMON);
+openlog(NAME, 'pid', LOG_DAEMON);
 setlogmask(LOG_UPTO(LOG_DEBUG));
 
-debug('rdnsd v%s starting', $VERSION);
+debug('%s v%s starting', NAME, $VERSION);
 
 #
 # initialise DNS cache
@@ -105,7 +106,7 @@ unless ($DEBUG) {
 	} else {
 		setsid();
 		chdir('/');
-		$0 = '[rdnsd]';
+		$0 = sprintf('[%s]', NAME);
 
 	}
 }
@@ -305,8 +306,11 @@ sub load_config {
 	#
 	$CONF->{'NodeID'}		= $ini->param('NodeID')			|| hostname();
 	$CONF->{'UpdateInterval'}	= $ini->param('UpdateInterval')		|| 293;
-	$CONF->{'PidFile'}		= $ini->param('PidFile')		|| '/var/run/rdnsd/rdnsd.pid';
+	$CONF->{'PidFile'}		= $ini->param('PidFile')		|| sprintf('/var/run/%s/%s.pid', NAME, NAME);
 	$CONF->{'Database'}		= $ini->param('Database')		|| undef;
+	$CONF->{'DBTable'}		= $ini->param('DBTable')		|| NAME;
+	$CONF->{'DBUsername'}		= $ini->param('DBUsername')		|| undef;
+	$CONF->{'DBPassword'}		= $ini->param('DBPassword')		|| undef;
 	$CONF->{'Percentile'}		= $ini->param('Percentile')		|| undef;
 	$CONF->{'AddressFamily'}	= $ini->param('AddressFamily')		|| 4;
 	$CONF->{'Protocol'}		= $ini->param('Protocol')		|| 'udp';
@@ -383,9 +387,9 @@ sub update_stats {
 	if ($CONF->{'Database'}) {
 		$db = db_connect();
 
-		$sth = $db->prepare('INSERT INTO rdnsd
+		$sth = $db->prepare(sprintf('INSERT INTO %s
 					(node_id, start_time, end_time, host, family, proto, count, success, rate, min_time, time, max_time, percentile_time)
-					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', $db->quote_identifier($CONF->{'DBTable'})));
 	}
 
 	my $fh;
@@ -480,19 +484,61 @@ sub update_stats {
 }
 
 sub db_connect {
-	return DBI->connect('dbi:SQLite:dbname='.$CONF->{'Database'}, '', '', { 'RaiseError' => 1, 'AutoCommit' => 0 });
+	my $dsn;
+	if ($CONF->{'Database'} =~ /^dbi:/i) {
+		$dsn = $CONF->{'Database'};
+
+	} else {
+		$dsn = 'dbi:SQLite:dbname='.$CONF->{'Database'};
+
+	}
+
+	return DBI->connect(
+		$dsn,
+		$CONF->{'DBUsername'},
+		$CONF->{'DBPassword'},
+		{
+			'RaiseError' => 1,
+			'AutoCommit' => 0,
+		}
+	);
 }
 
 sub initialise_database {
+
+	my $driver;
+	if ($CONF->{'Database'} =~ /^dbi:([^\:]+)/i) {
+		$driver = lc($1);
+
+	} else {
+		$driver = 'sqlite';
+
+	}
+
+	if ('sqlite' eq $driver) {
+		initialise_sqlite();
+
+	} elsif ('mysql'eq $driver) {
+		initialise_mysql();
+
+	} else {
+		die("unsupported database '$driver'");
+
+	}
+}
+
+sub initialise_sqlite {
 	#
 	# initialise database connection
 	#
 	my $db = db_connect();
 
+	my $tbl = $db->quote_identifier($CONF->{'DBTable'});
+
 	#
 	# create table
 	#
-	$db->do("CREATE TABLE IF NOT EXISTS rdnsd (
+	$db->do(sprintf("CREATE TABLE IF NOT EXISTS %s (
 		id		INTEGER NOT NULL PRIMARY KEY,
 		node_id		VARCHAR(255) NOT NULL,
 		start_time	DATETIME NOT NULL,
@@ -507,22 +553,66 @@ sub initialise_database {
 		time		INTEGER UNSIGNED NOT NULL,
 		max_time	INTEGER UNSIGNED NOT NULL,
 		percentile_time	INTEGER UNSIGNED DEFAULT NULL
-	)");
+	)", $tbl));
 
 	#
 	# create indexes
 	#
-	$db->do('CREATE INDEX IF NOT EXISTS host_idx		ON rdnsd(host)');
-	$db->do('CREATE INDEX IF NOT EXISTS start_time_idx	ON rdnsd(start_time)');
-	$db->do('CREATE INDEX IF NOT EXISTS end_time_idx	ON rdnsd(end_time)');
-	$db->do('CREATE INDEX IF NOT EXISTS family_idx		ON rdnsd(family)');
-	$db->do('CREATE INDEX IF NOT EXISTS proto_idx		ON rdnsd(proto)');
+	$db->do(sprintf('CREATE INDEX IF NOT EXISTS host_idx		ON %s(host)', $tbl));
+	$db->do(sprintf('CREATE INDEX IF NOT EXISTS start_time_idx	ON %s(start_time)', $tbl));
+	$db->do(sprintf('CREATE INDEX IF NOT EXISTS end_time_idx	ON %s(end_time)', $tbl));
+	$db->do(sprintf('CREATE INDEX IF NOT EXISTS family_idx		ON %s(family)', $tbl));
+	$db->do(sprintf('CREATE INDEX IF NOT EXISTS proto_idx		ON %s(proto)', $tbl));
 
 	$db->commit;
 
 	$db->disconnect();
 
-	debug('initialised database in %s', $CONF->{'Database'});
+	debug('initialised database');
+}
+
+sub initialise_mysql {
+	#
+	# initialise database connection
+	#
+	my $db = db_connect();
+
+	my $tbl = $db->quote_identifier($CONF->{'DBTable'});
+
+	#
+	# create table
+	#
+	$db->do(sprintf("CREATE TABLE IF NOT EXISTS %s (
+		id		BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+		node_id		VARCHAR(255) NOT NULL,
+		start_time	DATETIME NOT NULL,
+		end_time	DATETIME NOT NULL,
+		host		VARCHAR(255) NOT NULL,
+		family		TINYINT(1) UNSIGNED NOT NULL DEFAULT 4,
+		proto		CHAR(3) NOT NULL DEFAULT 'udp',
+		count		INTEGER UNSIGNED NOT NULL,
+		success		INTEGER UNSIGNED NOT NULL,
+		rate		DECIMAL UNSIGNED NOT NULL,
+		min_time	INTEGER UNSIGNED NOT NULL,
+		time		INTEGER UNSIGNED NOT NULL,
+		max_time	INTEGER UNSIGNED NOT NULL,
+		percentile_time	INTEGER UNSIGNED DEFAULT NULL
+	)", $tbl));
+
+	#
+	# create indexes
+	#
+	$db->do(sprintf('CREATE INDEX IF NOT EXISTS host_idx		ON %s(host)', $tbl));
+	$db->do(sprintf('CREATE INDEX IF NOT EXISTS start_time_idx	ON %s(start_time)', $tbl));
+	$db->do(sprintf('CREATE INDEX IF NOT EXISTS end_time_idx	ON %s(end_time)', $tbl));
+	$db->do(sprintf('CREATE INDEX IF NOT EXISTS family_idx		ON %s(family)', $tbl));
+	$db->do(sprintf('CREATE INDEX IF NOT EXISTS proto_idx		ON %s(proto)', $tbl));
+
+	$db->commit;
+
+	$db->disconnect();
+
+	debug('initialised database');
 }
 
 #
@@ -654,9 +744,7 @@ is an example:
 
 The directives are explained below.
 
-=over
-
-=item * C<NodeID ID>
+=head2 C<NodeID ID>
 
 Default: C<$HOSTNAME>
 
@@ -666,7 +754,7 @@ monitoring nodes to be aggregated losslessly.
 
 If not set, the system's host name is used.
 
-=item * C<UpdateInterval TIME>
+=head2 C<UpdateInterval TIME>
 
 Default: C<293>
 
@@ -675,23 +763,40 @@ database every C<TIME> seconds. This value B<MUST> be more than
 C<Loop x Timeout> seconds, and B<SHOULD> be at least three times that
 value.
 
-=item * C<PidFile /path/to/pid/file>
+=head2 C<PidFile /path/to/pid/file>
 
 Default: C</var/run/rdnsd/rdnsd.pid>
 
 The file where C<rdnsd> will write its pid.
 
-=item * C<Database FILE>
+=head2 C<Database FILE>
 
 Default: none
 
-C<rdnsd> will create an SQLite database at the specified file and
-write statistics to it. If the database already exists, the
-database structure must be compatible with the SQL C<INSERT>
-statement C<rdnsd> uses to insert data.
+The C<Database> directive can take two forms:
 
-The database will contain a single table named C<rdnsd>, which
-will contain the following columns:
+=over
+
+=item * the path to an SQLite database on disk
+
+=item * a L<DBI> DSN
+
+=back
+
+If the value of the C<Database> directive looks like a DSN (i.e.
+it begins with C<dbi:>) then C<rdnsd> will use the authentication
+credentials specified in by the C<DBUsername> and C<DBPassword>
+directives.
+
+On startup, C<rdnsd> will attempt to connect to the specified
+database and will create the C<rdnsd> table. Because each RDBMS
+has its own syntax for creating tables, only SQLite and MySQL
+databases are currently supported (support for other databases
+is easy to add, so submit a patch!)
+
+The database will contain a single, which will contain the
+following columns. The name of the table is determined by the
+C<DTable> directive.
 
 =over
 
@@ -727,14 +832,32 @@ configured percentile.
 
 =back
 
-=item * C<Percentile PERCENTILE>
+=head2 C<DBUsername USERNAME>
+
+Default: none
+
+Specifies the username for database authentication.
+
+=head2 C<DBPassword PASSWORD>
+
+Default: none
+
+Specifies the password for database authentication.
+
+=head2 C<DBTable TABLE>
+
+Default: C<rdnsd>
+
+Specifies the name of the table that C<rdnsd> will use.
+
+=head2 C<Percentile PERCENTILE>
 
 Default: none
 
 If this option is set, C<rdnsd> will calculate the response time at the
 given percentile.
 
-=item * C<AddressFamily (4|6)>
+=head2 C<AddressFamily (4|6)>
 
 Default: C<4>
 
@@ -743,13 +866,13 @@ the servers are identified by name rather than address (or when loaded
 from SRV records). If not defined, the default behaviour is to prefer
 IPv4.
 
-=item * C<Protocol (udp|tcp)>
+=head2 C<Protocol (udp|tcp)>
 
 Default: C<udp>
 
 Specify the transport protocol (UDP or TCP) to use.
 
-=item * C<Loop SECONDS>
+=head2 C<Loop SECONDS>
 
 Default: C<3>
 
@@ -757,7 +880,7 @@ This specifies the length of the main loop. If this is set to 2, then
 each server will be checked every 2 seconds. This value can be a decimal
 fraction, eg 0.25.
 
-=item * C<Timeout SECONDS>
+=head2 C<Timeout SECONDS>
 
 Default: C<1>
 
@@ -765,19 +888,19 @@ This specifies the timeout for DNS queries. A server will be considered
 down if it does not respond within this amount of time. This value
 B<MUST> be less than the value of C<Loop>.
 
-=item * C<Recurse (true|false)>
+=head2 C<Recurse (true|false)>
 
 Default: C<false>
 
 Enable recursion (i.e. set the `rd` bit on the queries sent to servers).
 
-=item * C<Question QUESTION>
+=head2 C<Question QUESTION>
 
 Default: C<example.com. IN A>
 
 Specify the DNS question. The format is "QNAME QCLASS QTYPE".
 
-=item * C<Servers SERVERS>
+=head2 C<Servers SERVERS>
 
 Default: none
 
@@ -788,7 +911,7 @@ IPv6 addresses.
 This directive can't be used at the same time as the C<Domains>
 directive.
 
-=item * C<Domains DOMAINS>
+=head2 C<Domains DOMAINS>
 
 Default: none
 
@@ -803,7 +926,7 @@ expires.
 This directive can't be used at the same time as the C<Servers>
 directive.
 
-=item * C<StatsFile /path/to/stats/file>
+=head2 C<StatsFile /path/to/stats/file>
 
 Default: none
 
@@ -815,7 +938,7 @@ See L<LEGACY STATISTICS FILE FORMAT> for further information.
 
 =back
 
-=head1 RELOADING CONFIGURATION
+=head1 RELOADING THE CONFIGURATION FILE
 
 C<rdnsd> will reload its configuration if you send it a C<SIGHUP>:
 
@@ -823,7 +946,7 @@ C<rdnsd> will reload its configuration if you send it a C<SIGHUP>:
 
 =head1 OBTAINING STATISTICS
 
-Every C<UpdateInterval> seconds, C<rdnsd> will write stats to the SQLite
+Every C<UpdateInterval> seconds, C<rdnsd> will write stats to the
 database specified by C<Database>, and, if set, the file specified by
 C<StatsFile>.
 
@@ -835,8 +958,7 @@ so subsequent signals will produce fresh statistical data.
 Older versions of C<rdnsd> used a flat file format for statistics, which
 would be updated every C<UpdateInterval> seconds, or when C<rdnsd>
 received the C<USR1> signal. This behaviour is now deprecated in favour
-of the SQLite database, but is still supported for backwards
-compatibility.
+of a database, but is still supported for backwards compatibility.
 
 The statistics file will contain one line for each server. Each line
 contains the nameserver checked, the response rate as a decimal
