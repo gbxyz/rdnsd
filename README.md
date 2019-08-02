@@ -7,8 +7,7 @@ rdnsd is a remote DNS server monitoring system.
 `rdnsd` can be used to monitor the availability and responsiveness of
 remote DNS servers. Given a list of DNS servers, it will periodically
 query each server and record whether a response was received, and how
-quickly. This information can then be obtained by querying an SQLite
-database.
+quickly. This information can then be obtained by querying a database.
 
 # USAGE
 
