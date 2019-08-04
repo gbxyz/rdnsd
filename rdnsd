@@ -305,7 +305,7 @@ sub load_config {
 	# copy values and set defaults for missing entries
 	#
 	$CONF->{'NodeID'}		= $ini->param('NodeID')			|| hostname();
-	$CONF->{'UpdateInterval'}	= $ini->param('UpdateInterval')		|| 293;
+	$CONF->{'UpdateInterval'}	= $ini->param('UpdateInterval')		|| 300;
 	$CONF->{'PidFile'}		= $ini->param('PidFile')		|| sprintf('/var/run/%s/%s.pid', NAME, NAME);
 	$CONF->{'Database'}		= $ini->param('Database')		|| undef;
 	$CONF->{'DBTable'}		= $ini->param('DBTable')		|| NAME;
@@ -728,7 +728,7 @@ C<rdnsd> must be configured using a configuration file. The following
 is an example:
 
 	NodeID		my-node-id
-	UpdateInterval	293
+	UpdateInterval	300
 	PidFile		/var/run/rdnsd/rdnsd.pid
 	Database	/var/run/rdnsd/rdnsd.db
 	Percentile	95
@@ -755,7 +755,7 @@ If not set, the system's host name is used.
 
 =head2 C<UpdateInterval TIME>
 
-Default: C<293>
+Default: C<300>
 
 This parameter tells C<rdnsd> to automatically update the statistics
 database every C<TIME> seconds. This value B<MUST> be more than
