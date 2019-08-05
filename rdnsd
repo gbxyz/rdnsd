@@ -16,8 +16,10 @@ use Sys::Syslog qw(:standard :macros);
 use Time::HiRes qw(time sleep);
 use threads;
 use constant NAME => 'rdnsd';
-use vars qw($VERSION $CFILE $DEBUG $HELP $PACKET $CONF @SERVERS $RELOAD $REFRESH $CACHE $STATS $UPDATED);
+use vars qw($VERSION $CFILE $DEBUG $HELP $PACKET $CONF @SERVERS $RELOAD $REFRESH $CACHE $STATS $UPDATED @PROTOCOLS);
 use strict;
+
+@PROTOCOLS = qw(udp tcp);
 
 $VERSION = '0.10';
 
@@ -172,31 +174,35 @@ sub main_loop {
 
 		my $t0 = time();
 
-		my %threads;
+		my $threads = {};
 		foreach my $ns (sort(@SERVERS)) {
 			#
 			# resolve nameserver to IP addresses in the main thread
 			#
 			my @ips = resolve($ns, $CONF->{'AddressFamily'});
 
-			#
-			# spawn thread
-			#
-			$threads{$ns} = threads->create(\&time_query, ($CONF->{'AddressFamily'}, $CONF->{'Protocol'}, , @ips));
+			foreach my $proto (@PROTOCOLS) {
+				#
+				# spawn thread
+				#
+				$threads->{$ns}->{$proto} = threads->create(\&time_query, ($CONF->{'AddressFamily'}, $proto, @ips));
+			}
 		}
 
 		#
 		# gather threads
 		#
-		foreach my $ns (sort(@SERVERS)) {
-			$STATS->{$ns}->{'count'}++;
+		foreach my $ns (keys(%{$threads})) {
+			foreach my $proto (keys(%{$threads->{$ns}})) {
+				$STATS->{$ns}->{$proto}->{'count'}++;
 
-			my $dt = $threads{$ns}->join;
+				my $dt = $threads->{$ns}->{$proto}->join;
 
-			if ($dt) {
-				$STATS->{$ns}->{'time'} += $dt;
-				$STATS->{$ns}->{'success'}++;
-				push(@{$STATS->{$ns}->{'times'}}, $dt);
+				if ($dt) {
+					$STATS->{$ns}->{$proto}->{'time'} += $dt;
+					$STATS->{$ns}->{$proto}->{'success'}++;
+					push(@{$STATS->{$ns}->{$proto}->{'times'}}, $dt);
+				}
 			}
 		}
 
@@ -397,63 +403,64 @@ sub update_stats {
 		$fh = IO::File->new($CONF->{'StatsFile'}, 'w');
 	}
 
-	foreach my $ns (sort(@SERVERS)) {
-
-		#
-		# no stats for this server, ignore it
-		#
-		next if ($STATS->{$ns}->{'count'} < 1);
-
-		#
-		# compute success rate and average RTT
-		#
-		my $rate = ($STATS->{$ns}->{'success'} / $STATS->{$ns}->{'count'});
-		my $time = floor(1000 * $STATS->{$ns}->{'time'} / $STATS->{$ns}->{'count'});
-
-		my @times = ($rate > 0 ? sort(@{$STATS->{$ns}->{'times'}}) : ());
-
-		my $ptime;
-		if ($CONF->{'Percentile'}) {
+	foreach my $ns (sort(keys(%{$STATS}))) {
+		foreach my $proto (keys(%{$STATS->{$ns}})) {
 			#
-			# find the position in the array which corresponds to the percentile
+			# no stats for this server, ignore it
 			#
-			my $pos = floor(scalar(@times) * $CONF->{'Percentile'} / 100) - 1;
+			next if ($STATS->{$ns}->{$proto}->{'count'} < 1);
 
 			#
-			# compute percentile time
+			# compute success rate and average RTT
 			#
-			$ptime = floor(1000 * $times[$pos]);
-		}
+			my $rate = ($STATS->{$ns}->{$proto}->{'success'} / $STATS->{$ns}->{$proto}->{'count'});
+			my $time = floor(1000 * $STATS->{$ns}->{$proto}->{'time'} / $STATS->{$ns}->{$proto}->{'count'});
 
-		#
-		# insert into database
-		#
-		if ($sth) {
-			$sth->execute(
-				lc($CONF->{'NodeID'}),
-				strftime('%Y-%m-%d %H:%M:%S', localtime($UPDATED)),	# times are in the system's configured time zone
-				strftime('%Y-%m-%d %H:%M:%S', localtime(time())),	# times are in the system's configured time zone
-				lc($ns),
-				int($CONF->{'AddressFamily'}),
-				lc($CONF->{'Protocol'}),
-				int($STATS->{$ns}->{'count'}),
-				int($STATS->{$ns}->{'success'}),
-				sprintf('%f', $rate),
-				int(1000 * min(@times)),
-				int($time),
-				int(1000 * max(@times)),
-				($ptime ? int($ptime) : undef),
-			);
-		}
+			my @times = ($rate > 0 ? sort(@{$STATS->{$ns}->{$proto}->{'times'}}) : ());
 
-		#
-		# write line to file
-		#
-		if ($fh) {
-			my $line = sprintf('%s %0.2f %d', $ns, $rate, $time);
-			$line .= sprintf(' %d', $ptime) if defined($ptime);
+			my $ptime;
+			if ($CONF->{'Percentile'}) {
+				#
+				# find the position in the array which corresponds to the percentile
+				#
+				my $pos = floor(scalar(@times) * $CONF->{'Percentile'} / 100) - 1;
 
-			$fh->print($line."\n");
+				#
+				# compute percentile time
+				#
+				$ptime = floor(1000 * $times[$pos]);
+			}
+
+			#
+			# insert into database
+			#
+			if ($sth) {
+				$sth->execute(
+					lc($CONF->{'NodeID'}),
+					strftime('%Y-%m-%d %H:%M:%S', localtime($UPDATED)),	# times are in the system's configured time zone
+					strftime('%Y-%m-%d %H:%M:%S', localtime(time())),	# times are in the system's configured time zone
+					lc($ns),
+					int($CONF->{'AddressFamily'}),
+					$proto,
+					int($STATS->{$ns}->{$proto}->{'count'}),
+					int($STATS->{$ns}->{$proto}->{'success'}),
+					sprintf('%f', $rate),
+					int(1000 * min(@times)),
+					int($time),
+					int(1000 * max(@times)),
+					($ptime ? int($ptime) : undef),
+				);
+			}
+
+			#
+			# write line to file
+			#
+			if ($fh && $proto eq $CONF->{'Protocol'}) {
+				my $line = sprintf('%s %0.2f %d', $ns, $rate, $time);
+				$line .= sprintf(' %d', $ptime) if defined($ptime);
+
+				$fh->print($line."\n");
+			}
 		}
 	}
 
@@ -733,7 +740,6 @@ is an example:
 	Database	/var/run/rdnsd/rdnsd.db
 	Percentile	95
 	AddressFamily	4
-	Protocol	udp
 	Loop		3
 	Timeout		1
 	Recurse		false
@@ -865,12 +871,6 @@ the servers are identified by name rather than address (or when loaded
 from SRV records). If not defined, the default behaviour is to prefer
 IPv4.
 
-=head2 C<Protocol (udp|tcp)>
-
-Default: C<udp>
-
-Specify the transport protocol (UDP or TCP) to use.
-
 =head2 C<Loop SECONDS>
 
 Default: C<3>
@@ -929,11 +929,21 @@ directive.
 
 Default: none
 
-B<Note:> this is a legacy option to provide backwards compatibility with
-older versions of C<rdnsd>. It specifies a file to which C<rdnsd> will
-write statistics.
+This is a legacy option to provide backwards compatibility with older
+versions of C<rdnsd>. It specifies a file to which C<rdnsd> will write
+statistics.
 
 See L<LEGACY STATISTICS FILE FORMAT> for further information.
+
+=head2 C<Protocol (udp|tcp)>
+
+Default: C<udp>
+
+This is a legacy option to provide backwards compatibility with
+older versions of C<rdnsd>. It specifies the transport protocol for
+which stats will be written to the statistics file (C<rdnsd> will still
+monitor both UDP and TCP and will write stats for both protocols to the
+database).
 
 =head1 RELOADING THE CONFIGURATION FILE
 
