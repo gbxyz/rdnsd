@@ -394,7 +394,7 @@ sub update_serverlist {
 }
 
 #
-# write stats to the database (and the legacy stats file if configured)
+# write stats to the database (and the stats file if configured)
 #
 sub update_stats {
 
@@ -955,9 +955,9 @@ directive.
 
 Default: none
 
-This is a legacy option to provide backwards compatibility with older
-versions of C<rdnsd>. It specifies a file to which C<rdnsd> will write
-statistics.
+This is a B<deprecated> option which provides backwards compatibility
+with older versions of C<rdnsd>. It specifies a file to which C<rdnsd>
+will write statistics.
 
 See L<LEGACY STATISTICS FILE FORMAT> for further information.
 
@@ -965,11 +965,11 @@ See L<LEGACY STATISTICS FILE FORMAT> for further information.
 
 Default: C<udp>
 
-This is a legacy option to provide backwards compatibility with
-older versions of C<rdnsd>. It specifies the transport protocol for
-which stats will be written to the statistics file (C<rdnsd> will still
-monitor both UDP and TCP and will write stats for both protocols to the
-database).
+This is a B<deprecated> option which provides backwards compatibility
+with older versions of C<rdnsd>. It specifies the transport protocol
+for which stats will be written to the statistics file (C<rdnsd> will
+still monitor both UDP and TCP and will write stats for both protocols
+to the database).
 
 =head1 RELOADING THE CONFIGURATION FILE
 
