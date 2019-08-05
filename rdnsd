@@ -446,8 +446,8 @@ sub update_stats {
 			if ($sth) {
 				$sth->execute(
 					lc($CONF->{'NodeID'}),
-					strftime('%Y-%m-%d %H:%M:%S', localtime($UPDATED)),	# times are in the system's configured time zone
-					strftime('%Y-%m-%d %H:%M:%S', localtime(time())),	# times are in the system's configured time zone
+					strftime('%Y-%m-%d %H:%M:%S', localtime($UPDATED)),
+					strftime('%Y-%m-%d %H:%M:%S', localtime(time())),
 					lc($ns),
 					lc($GROUPS->{$ns}) || 'default',
 					int($CONF->{'AddressFamily'}),
@@ -825,9 +825,11 @@ C<DTable> directive.
 
 =item * C<node_id> - node ID/hostname
 
-=item * C<start_time> - date+time the monitoring interval began
+=item * C<start_time> - date+time the monitoring interval began (in the
+system's configured time zone)
 
-=item * C<ends_time> - date+time the monitoring interval ended
+=item * C<ends_time> - date+time the monitoring interval ended (in the
+system's configured time zone)
 
 =item * C<host> - server name
 
