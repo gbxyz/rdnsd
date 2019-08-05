@@ -275,8 +275,8 @@ sub time_query {
 		debug($@);
 	}
 
-	if (!$result) {
-		return undef;
+		if (!$result || (defined($CONF->{'ResponseCode'}) && $result->header->rcode ne $CONF->{'ResponseCode'})) {
+			return undef;
 
 	} else {
 		return $dt;
@@ -324,6 +324,7 @@ sub load_config {
 	$CONF->{'Timeout'}		= $ini->param('Timeout')		|| 1;
 	$CONF->{'Recurse'}		= $ini->param('Recurse') eq 'true'	|| undef;
 	$CONF->{'Question'}		= $ini->param('Question')		|| '. A IN';
+	$CONF->{'ResponseCode'}		= $ini->param('ResponseCode')		|| undef;
 	$CONF->{'Servers'}		= $ini->param('Servers')		|| undef;
 	$CONF->{'Domains'}		= $ini->param('Domains')		|| undef;
 	$CONF->{'StatsFile'}		= $ini->param('StatsFile')		|| undef;
@@ -910,6 +911,14 @@ Enable recursion (i.e. set the `rd` bit on the queries sent to servers).
 Default: C<example.com. IN A>
 
 Specify the DNS question. The format is "QNAME QCLASS QTYPE".
+
+=head2 C<ResponseCode RCODE>
+
+Default: none
+
+Specify the expected RCODE. If the RCODE does not match the server is
+assumed to be down. If no value is specified, any RCODE will be
+accepted.
 
 =head2 C<Servers SERVERS>
 
