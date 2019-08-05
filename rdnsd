@@ -16,7 +16,7 @@ use Sys::Syslog qw(:standard :macros);
 use Time::HiRes qw(time sleep);
 use threads;
 use constant NAME => 'rdnsd';
-use vars qw($VERSION $CFILE $DEBUG $HELP $PACKET $CONF @SERVERS $RELOAD $REFRESH $CACHE $STATS $UPDATED @PROTOCOLS);
+use vars qw($VERSION $CFILE $DEBUG $HELP $PACKET $CONF @SERVERS $RELOAD $REFRESH $CACHE $STATS $UPDATED @PROTOCOLS $GROUPS);
 use strict;
 
 @PROTOCOLS = qw(udp tcp);
@@ -343,6 +343,8 @@ sub load_config {
 # to a SIGHUP, or because a DNS TTL has been reached:
 #
 sub update_serverlist {
+	$GROUPS = {};
+
 	if ($CONF->{'Servers'}) {
 		# statically defined server list, never refresh
 		$REFRESH = -1;
@@ -364,7 +366,8 @@ sub update_serverlist {
 			my $answer = $resolver->query('_dns._udp.'.$domain, 'SRV');
 			if ($answer) {
 				foreach my $rr (grep { 'SRV' eq $_->type } $answer->answer) {
-					push(@SERVERS, $rr->target);
+					push(@SERVERS, lc($rr->target));
+					$GROUPS->{lc($rr->target)} = lc($domain);
 
 					#
 					# reduce TTL if we see a lower value
@@ -394,8 +397,8 @@ sub update_stats {
 		$db = db_connect();
 
 		$sth = $db->prepare(sprintf('INSERT INTO %s
-					(node_id, start_time, end_time, host, family, proto, count, success, rate, min_time, time, max_time, percentile_time)
-					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', $db->quote_identifier($CONF->{'DBTable'})));
+					(`node_id`, `start_time`, `end_time`, `host`, `group`, `family`, `proto`, `count`, `success`, `rate`, `min_time`, `time`, `max_time`, `percentile_time`)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', $db->quote_identifier($CONF->{'DBTable'})));
 	}
 
 	my $fh;
@@ -440,8 +443,9 @@ sub update_stats {
 					strftime('%Y-%m-%d %H:%M:%S', localtime($UPDATED)),	# times are in the system's configured time zone
 					strftime('%Y-%m-%d %H:%M:%S', localtime(time())),	# times are in the system's configured time zone
 					lc($ns),
+					lc($GROUPS->{$ns}) || 'default',
 					int($CONF->{'AddressFamily'}),
-					$proto,
+					lc($proto),
 					int($STATS->{$ns}->{$proto}->{'count'}),
 					int($STATS->{$ns}->{$proto}->{'success'}),
 					sprintf('%f', $rate),
@@ -546,30 +550,33 @@ sub initialise_sqlite {
 	# create table
 	#
 	$db->do(sprintf("CREATE TABLE IF NOT EXISTS %s (
-		id		INTEGER NOT NULL PRIMARY KEY,
-		node_id		VARCHAR(255) NOT NULL,
-		start_time	DATETIME NOT NULL,
-		end_time	DATETIME NOT NULL,
-		host		VARCHAR(255) NOT NULL,
-		family		INTEGER UNSIGNED NOT NULL DEFAULT 4,
-		proto		CHAR(3) NOT NULL DEFAULT 'udp',
-		count		INTEGER UNSIGNED NOT NULL,
-		success		INTEGER UNSIGNED NOT NULL,
-		rate		DECIMAL UNSIGNED NOT NULL,
-		min_time	INTEGER UNSIGNED NOT NULL,
-		time		INTEGER UNSIGNED NOT NULL,
-		max_time	INTEGER UNSIGNED NOT NULL,
-		percentile_time	INTEGER UNSIGNED DEFAULT NULL
+		`id`			INTEGER NOT NULL PRIMARY KEY,
+		`node_id`		VARCHAR(255) NOT NULL,
+		`start_time`		DATETIME NOT NULL,
+		`end_time`		DATETIME NOT NULL,
+		`host`			VARCHAR(255) NOT NULL,
+		`group`			VARCHAR(255) NOT NULL DEFAULT 'default',
+		`family`		INTEGER UNSIGNED NOT NULL DEFAULT 4,
+		`proto`			CHAR(3) NOT NULL DEFAULT 'udp',
+		`count`			INTEGER UNSIGNED NOT NULL,
+		`success`		INTEGER UNSIGNED NOT NULL,
+		`rate`			DECIMAL UNSIGNED NOT NULL,
+		`min_time`		INTEGER UNSIGNED NOT NULL,
+		`time`			INTEGER UNSIGNED NOT NULL,
+		`max_time`		INTEGER UNSIGNED NOT NULL,
+		`percentile_time`	INTEGER UNSIGNED DEFAULT NULL
 	)", $tbl));
 
 	#
 	# create indexes
 	#
-	$db->do(sprintf('CREATE INDEX IF NOT EXISTS host_idx		ON %s(host)', $tbl));
-	$db->do(sprintf('CREATE INDEX IF NOT EXISTS start_time_idx	ON %s(start_time)', $tbl));
-	$db->do(sprintf('CREATE INDEX IF NOT EXISTS end_time_idx	ON %s(end_time)', $tbl));
-	$db->do(sprintf('CREATE INDEX IF NOT EXISTS family_idx		ON %s(family)', $tbl));
-	$db->do(sprintf('CREATE INDEX IF NOT EXISTS proto_idx		ON %s(proto)', $tbl));
+	$db->do(sprintf('CREATE INDEX IF NOT EXISTS `node_idx`		ON %s(`node_id`)', $tbl));
+	$db->do(sprintf('CREATE INDEX IF NOT EXISTS `host_idx`		ON %s(`host`)', $tbl));
+	$db->do(sprintf('CREATE INDEX IF NOT EXISTS `group_idx`		ON %s(`group`)', $tbl));
+	$db->do(sprintf('CREATE INDEX IF NOT EXISTS `start_time_idx`	ON %s(`start_time`)', $tbl));
+	$db->do(sprintf('CREATE INDEX IF NOT EXISTS `end_time_idx`	ON %s(`end_time`)', $tbl));
+	$db->do(sprintf('CREATE INDEX IF NOT EXISTS `family_idx`	ON %s(`family`)', $tbl));
+	$db->do(sprintf('CREATE INDEX IF NOT EXISTS `proto_idx`		ON %s(`proto`)', $tbl));
 
 	$db->commit;
 
@@ -590,30 +597,33 @@ sub initialise_mysql {
 	# create table
 	#
 	$db->do(sprintf("CREATE TABLE IF NOT EXISTS %s (
-		id		BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-		node_id		VARCHAR(255) NOT NULL,
-		start_time	DATETIME NOT NULL,
-		end_time	DATETIME NOT NULL,
-		host		VARCHAR(255) NOT NULL,
-		family		TINYINT(1) UNSIGNED NOT NULL DEFAULT 4,
-		proto		CHAR(3) NOT NULL DEFAULT 'udp',
-		count		INTEGER UNSIGNED NOT NULL,
-		success		INTEGER UNSIGNED NOT NULL,
-		rate		DECIMAL UNSIGNED NOT NULL,
-		min_time	INTEGER UNSIGNED NOT NULL,
-		time		INTEGER UNSIGNED NOT NULL,
-		max_time	INTEGER UNSIGNED NOT NULL,
-		percentile_time	INTEGER UNSIGNED DEFAULT NULL
+		`id`			BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+		`node_id`		VARCHAR(255) NOT NULL,
+		`start_time`		DATETIME NOT NULL,
+		`end_time`		DATETIME NOT NULL,
+		`host`			VARCHAR(255) NOT NULL,
+		`group`			VARCHAR(255) NOT NULL DEFAULT 'default',
+		`family`		TINYINT(1) UNSIGNED NOT NULL DEFAULT 4,
+		`proto`			CHAR(3) NOT NULL DEFAULT 'udp',
+		`count`			INTEGER UNSIGNED NOT NULL,
+		`success`		INTEGER UNSIGNED NOT NULL,
+		`rate`			DECIMAL UNSIGNED NOT NULL,
+		`min_time`		INTEGER UNSIGNED NOT NULL,
+		`time`			INTEGER UNSIGNED NOT NULL,
+		`max_time`		INTEGER UNSIGNED NOT NULL,
+		`percentile_time`	INTEGER UNSIGNED DEFAULT NULL
 	)", $tbl));
 
 	#
 	# create indexes
 	#
-	$db->do(sprintf('CREATE INDEX IF NOT EXISTS host_idx		ON %s(host)', $tbl));
-	$db->do(sprintf('CREATE INDEX IF NOT EXISTS start_time_idx	ON %s(start_time)', $tbl));
-	$db->do(sprintf('CREATE INDEX IF NOT EXISTS end_time_idx	ON %s(end_time)', $tbl));
-	$db->do(sprintf('CREATE INDEX IF NOT EXISTS family_idx		ON %s(family)', $tbl));
-	$db->do(sprintf('CREATE INDEX IF NOT EXISTS proto_idx		ON %s(proto)', $tbl));
+	$db->do(sprintf('CREATE INDEX IF NOT EXISTS `node_idx`		ON %s(`node_id`)', $tbl));
+	$db->do(sprintf('CREATE INDEX IF NOT EXISTS `host_idx`		ON %s(`host`)', $tbl));
+	$db->do(sprintf('CREATE INDEX IF NOT EXISTS `group_idx`		ON %s(`group`)', $tbl));
+	$db->do(sprintf('CREATE INDEX IF NOT EXISTS `start_time_idx`	ON %s(`start_time`)', $tbl));
+	$db->do(sprintf('CREATE INDEX IF NOT EXISTS `end_time_idx`	ON %s(`end_time`)', $tbl));
+	$db->do(sprintf('CREATE INDEX IF NOT EXISTS `family_idx`	ON %s(`family`)', $tbl));
+	$db->do(sprintf('CREATE INDEX IF NOT EXISTS `proto_idx`		ON %s(`proto`)', $tbl));
 
 	$db->commit;
 
@@ -814,6 +824,8 @@ C<DTable> directive.
 =item * C<ends_time> - date+time the monitoring interval ended
 
 =item * C<host> - server name
+
+=item * C<group> - the group to which the server belongs
 
 =item * C<family> - IP version (4 or 6)
 
