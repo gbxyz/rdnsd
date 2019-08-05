@@ -236,51 +236,52 @@ sub main_loop {
 sub time_query {
 	my ($family, $proto, @servers) = @_;
 
-	return undef if (scalar(@servers) < 1);
+	if (scalar(@servers) < 1) {
+		warn('received an empty set of nameservers');
+		return undef;
 
-	#
-	# construct and configure a new resolver object
-	#
-	my $resolver = Net::DNS::Resolver->new;
-	$resolver->retry(0);
-	$resolver->igntc(1);
-	$resolver->usevc('tcp' eq $proto);
-	$resolver->udp_timeout($CONF->{'Timeout'});
-	$resolver->tcp_timeout($CONF->{'Timeout'});
-	$resolver->persistent_udp(0);
-	$resolver->persistent_tcp(0);
-	$resolver->force_v4(4 == $family);
-	$resolver->force_v6(6 == $family);
+	} else {
+		#
+		# construct a resolver
+		#
+		my $resolver = Net::DNS::Resolver->new(
+			'nameservers'		=> \@servers,
+			'retry'			=> 0,
+			'igntc'			=> 1,
+			'usevc'			=> ('tcp' eq $proto),
+			'udp_timeout'		=> $CONF->{'Timeout'},
+			'tcp_timeout'		=> $CONF->{'Timeout'},
+			'persistent_udp'	=> 0,
+			'persistent_tcp'	=> 0,
+			'force_v4'		=> 4 == $family,
+			'force_v6'		=> 6 == $family,
+		);
 
-	#
-	# specify nameservers
-	#
-	$resolver->nameservers(@servers);
+		my $result;
 
-	my $result;
+		my $t0 = time();
 
-	my $t0 = time();
+		#
+		# send query inside an eval to catch errors
+		#
+		eval {
+			$result = $resolver->send($PACKET);
+		};
 
-	#
-	# send query inside an eval to catch errors
-	#
-	eval {
-		$result = $resolver->send($PACKET);
-	};
+		my $dt = (time() - $t0);
 
-	my $dt = (time() - $t0);
-
-	if ($@) {
-		chomp($@);
-		debug($@);
-	}
+		if ($@) {
+			chomp($@);
+			debug($@);
+		}
 
 		if (!$result || (defined($CONF->{'ResponseCode'}) && $result->header->rcode ne $CONF->{'ResponseCode'})) {
 			return undef;
 
-	} else {
-		return $dt;
+		} else {
+			return $dt;
 
+		}
 	}
 }
 
