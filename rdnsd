@@ -320,7 +320,6 @@ sub load_config {
 	$CONF->{'DBPassword'}		= $ini->param('DBPassword')		|| undef;
 	$CONF->{'Percentile'}		= $ini->param('Percentile')		|| undef;
 	$CONF->{'AddressFamily'}	= $ini->param('AddressFamily')		|| 4;
-	$CONF->{'Protocol'}		= $ini->param('Protocol')		|| 'udp';
 	$CONF->{'Loop'}			= $ini->param('Loop')			|| 3;
 	$CONF->{'Timeout'}		= $ini->param('Timeout')		|| 1;
 	$CONF->{'Recurse'}		= $ini->param('Recurse') eq 'true'	|| undef;
@@ -328,6 +327,11 @@ sub load_config {
 	$CONF->{'ResponseCode'}		= $ini->param('ResponseCode')		|| undef;
 	$CONF->{'Servers'}		= $ini->param('Servers')		|| undef;
 	$CONF->{'Domains'}		= $ini->param('Domains')		|| undef;
+
+	#
+	# deprecated options
+	#
+	$CONF->{'Protocol'}		= $ini->param('Protocol')		|| 'udp';
 	$CONF->{'StatsFile'}		= $ini->param('StatsFile')		|| undef;
 
 	#
