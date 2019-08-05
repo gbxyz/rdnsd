@@ -402,9 +402,13 @@ sub update_stats {
 	if ($CONF->{'Database'}) {
 		$db = db_connect();
 
-		$sth = $db->prepare(sprintf('INSERT INTO %s
-					(`node_id`, `start_time`, `end_time`, `host`, `group`, `family`, `proto`, `count`, `success`, `rate`, `min_time`, `time`, `max_time`, `percentile_time`)
-					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', $db->quote_identifier($CONF->{'DBTable'})));
+		my @cols = qw(node_id start_time end_time host group family proto count success rate min_time time max_time percentile_time);
+		$sth = $db->prepare(sprintf(
+			'INSERT INTO %s (%s) VALUES (?%s)',
+			$db->quote_identifier($CONF->{'DBTable'}),
+			join(',', map { $db->quote_identifier($_) } @cols),
+			(',?' x (scalar(@cols)-1))
+		));
 	}
 
 	my $fh;
@@ -815,9 +819,9 @@ has its own syntax for creating tables, only SQLite and MySQL
 databases are currently supported (support for other databases
 is easy to add, so submit a patch!)
 
-The database will contain a single, which will contain the
+The database will contain a single table, which will contain the
 following columns. The name of the table is determined by the
-C<DTable> directive.
+C<DBTable> directive.
 
 =over
 

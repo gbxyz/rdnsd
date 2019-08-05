@@ -96,9 +96,9 @@ has its own syntax for creating tables, only SQLite and MySQL
 databases are currently supported (support for other databases
 is easy to add, so submit a patch!)
 
-The database will contain a single, which will contain the
+The database will contain a single table, which will contain the
 following columns. The name of the table is determined by the
-`DTable` directive.
+`DBTable` directive.
 
 - `id` - unique row ID
 - `node_id` - node ID/hostname
