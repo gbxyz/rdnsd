@@ -23,6 +23,9 @@ use strict;
 
 $VERSION = '0.10';
 
+#
+# default config file location
+#
 $CFILE = sprintf('/etc/%s/%s.conf', NAME, NAME);
 
 #
@@ -157,7 +160,6 @@ exit(1);
 # main loop function
 #
 sub main_loop {
-
 	#
 	# run inside eval to catch fatal errors
 	#
@@ -229,15 +231,16 @@ sub main_loop {
 # send a DNS query and return the amount of time it took (or undef if no
 # answer was received within the timeout window)
 #
-# we accept multiple arguments since servers may be multi-homed. this
-# function should only ever receive IP addresses as arguments, otherwise
-# the RTT will erroneously include the time taken to resolve the name
+# it accepts multiple IP addresses since servers may be multi-homed.
+# this function should only ever receive IP addresses as arguments,
+# otherwise the RTT will erroneously include the time taken to resolve
+# the name
 #
 sub time_query {
-	my ($family, $proto, @servers) = @_;
+	my ($family, $proto, @ips) = @_;
 
-	if (scalar(@servers) < 1) {
-		warn('received an empty set of nameservers');
+	if (scalar(@ips) < 1) {
+		warn('received an empty set of IP addresses');
 		return undef;
 
 	} else {
@@ -245,16 +248,16 @@ sub time_query {
 		# construct a resolver
 		#
 		my $resolver = Net::DNS::Resolver->new(
-			'nameservers'		=> \@servers,
-			'retry'			=> 0,
-			'igntc'			=> 1,
-			'usevc'			=> ('tcp' eq $proto),
-			'udp_timeout'		=> $CONF->{'Timeout'},
-			'tcp_timeout'		=> $CONF->{'Timeout'},
-			'persistent_udp'	=> 0,
-			'persistent_tcp'	=> 0,
-			'force_v4'		=> 4 == $family,
-			'force_v6'		=> 6 == $family,
+			'nameservers'		=> \@ips,		# IP addresses to query
+			'retry'			=> 0,			# no retries
+			'igntc'			=> 1,			# ignore TC bit on UDP queries so we don't do a TCP query
+			'usevc'			=> ('tcp' eq $proto),	# enable/disable TCP
+			'udp_timeout'		=> $CONF->{'Timeout'},	# Set timeout
+			'tcp_timeout'		=> $CONF->{'Timeout'},	# Set timeout
+			'persistent_udp'	=> 0,			# Disable persistent connections
+			'persistent_tcp'	=> 0,			# Disable persistent connections
+			'force_v4'		=> (4 == $family),	# Force IPv4
+			'force_v6'		=> (6 == $family),	# Force IPv6
 		);
 
 		my $result;
@@ -347,12 +350,18 @@ sub update_serverlist {
 	$GROUPS = {};
 
 	if ($CONF->{'Servers'}) {
+		#
 		# statically defined server list, never refresh
+		#
 		$REFRESH = -1;
 
 		@SERVERS = ('ARRAY' eq ref($CONF->{'Servers'}) ? @{$CONF->{'Servers'}} : split(/\s*,\s*/, $CONF->{'Servers'}));
 
 	} else {
+		#
+		# dynamic server list
+		#
+
 		@SERVERS = ();
 
 		my $resolver = Net::DNS::Resolver->new;
@@ -637,8 +646,8 @@ sub initialise_mysql {
 
 #
 # resolve a server name to IPv4 or IPv6 addresses, using a cached value
-# if possible will attempt to detect literal IPs to avoid doing a DNS
-# lookup
+# if possible. this function will attempt to detect literal IPs to avoid
+# doing a DNS lookup
 #
 sub resolve {
 	my $name = lc(shift);
@@ -648,14 +657,16 @@ sub resolve {
 
 	if (($name =~ /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/ && 'A' eq $type) || ($name =~ /^[0-9a-f:]+$/i && 'AAAA' eq $type)) {
 		#
-		# IP literal, just return it
+		# Literal IP, just return it
 		#
 		return ($name);
 
 	} else {
 		if (!defined($CACHE->{$name}->{$type}) || $CACHE->{$name}->{$type}->{'expires'} < time()) {
 			my $resolver = Net::DNS::Resolver->new;
+
 			my $answer = $resolver->query($name.'.', $type);
+
 			if ($answer) {
 				#
 				# start with a high value
@@ -685,18 +696,20 @@ sub resolve {
 					'expires' => time() + $minttl,
 				}
 
-			} else {
-				debug("unable to resolve '%s'", $name);
-
-				if (!defined($CACHE->{$name}->{$type})) {
-					$CACHE->{$name}->{$type} = {
-						'addrs'   => [],
-						'expires' => time(),
-					}
+			} elsif (!defined($CACHE->{$name}->{$type})) {
+				#
+				# no answer and cache miss
+				#
+				$CACHE->{$name}->{$type} = {
+					'addrs'   => [],
+					'expires' => 0,
 				}
 			}
 		}
 
+		#
+		# return whatever's in cache
+		#
 		return @{$CACHE->{$name}->{$type}->{'addrs'}};
 	}
 }
