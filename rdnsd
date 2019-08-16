@@ -630,8 +630,6 @@ sub initialise_mysql {
 	$db->do(sprintf('CREATE INDEX IF NOT EXISTS `family_idx`	ON %s(`family`)', $tbl));
 	$db->do(sprintf('CREATE INDEX IF NOT EXISTS `proto_idx`		ON %s(`proto`)', $tbl));
 
-	$db->commit;
-
 	$db->disconnect();
 
 	debug('initialised database');
