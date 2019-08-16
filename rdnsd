@@ -270,11 +270,6 @@ sub time_query {
 
 		my $dt = (time() - $t0);
 
-		if ($@) {
-			chomp($@);
-			debug($@);
-		}
-
 		if (!$result || (defined($CONF->{'ResponseCode'}) && $result->header->rcode ne $CONF->{'ResponseCode'})) {
 			return undef;
 
