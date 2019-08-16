@@ -16,17 +16,31 @@ use Sys::Syslog qw(:standard :macros);
 use Time::HiRes qw(time sleep);
 use threads;
 use constant NAME => 'rdnsd';
-use vars qw($VERSION $CFILE $DEBUG $HELP $PACKET $CONF @SERVERS $RELOAD $REFRESH $CACHE $STATS $UPDATED @PROTOCOLS $GROUPS);
+use vars (
+	'$VERSION',	# application version number
+	'$CFILE',	# default config file location
+	'$DEBUG',	# debug flag
+	'$HELP',	# help flag
+	'$PACKET',	# pre-compiled query packet
+	'$CONF',	# configuration
+	'@SERVERS',	# list of servers to monitor
+	'$RELOAD',	# config reload flag (set by SIGHUP handler)
+	'$REFRESH',	# server list refresh timer
+	'$CACHE',	# cache of server IPs
+	'$STATS',	# statistics data
+	'$UPDATED',	# time of last update of stats
+	'@PROTOCOLS',	# supported transport protocols
+	'$GROUPS',	# server groups
+);
 use strict;
 
 @PROTOCOLS = qw(udp tcp);
 
 $VERSION = '0.10';
 
-#
-# default config file location
-#
 $CFILE = sprintf('/etc/%s/%s.conf', NAME, NAME);
+
+$CACHE = {};
 
 #
 # get config from command line:
@@ -39,9 +53,6 @@ exit(1) unless (GetOptions(
 
 pod2usage('-verbose' => 99, '-sections' => 'USAGE|OPTIONS') if ($HELP);
 
-#
-# load configuration
-#
 load_config();
 
 #
@@ -81,29 +92,15 @@ if (!$CONF->{'Database'} && !$CONF->{'StatsFile'}) {
 
 initialise_database() if ($CONF->{'Database'});
 
-#
-# configure logging
-#
 openlog(NAME, 'pid', LOG_DAEMON);
 setlogmask(LOG_UPTO(LOG_DEBUG));
 
 debug('%s v%s starting', NAME, $VERSION);
 
-#
-# initialise DNS cache
-#
-$CACHE = {};
-
-#
-# generate list of servers
-#
 update_serverlist();
 
 die('no servers found') if (scalar(@SERVERS) < 1);
 
-#
-# daemonize:
-#
 unless ($DEBUG) {
 	if (fork() > 0) {
 		exit 0;
@@ -116,9 +113,6 @@ unless ($DEBUG) {
 	}
 }
 
-#
-# write our PID to a file:
-#
 if (!open(PIDFILE, '>'.$CONF->{'PidFile'})) {
 	die("Error opening '$CONF->{'PidFile'}': $!");
 
@@ -130,7 +124,8 @@ if (!open(PIDFILE, '>'.$CONF->{'PidFile'})) {
 }
 
 #
-# SIGHUP handler:
+# the SIGHUP handler sets the $RELOAD flag and the $REFRESH timer so we reload
+# our config before the next loop
 #
 $SIG{'HUP'} = sub {
 	debug('received SIGHUP');
@@ -138,40 +133,19 @@ $SIG{'HUP'} = sub {
 	$REFRESH = 0;
 };
 
-#
-# initialise update timer
-#
 $UPDATED = time();
 
-#
-# we put statistics data in here
-#
 $STATS = {};
 
-#
-# loop forever:
-#
 debug('entering main loop');
 main_loop() while (1);
 
 exit(1);
 
-#
-# main loop function
-#
 sub main_loop {
-	#
-	# run inside eval to catch fatal errors
-	#
 	eval {
-		#
-		# refresh server list if necessary
-		#
 		update_serverlist() if ($REFRESH <= time());
 
-		#
-		# reload config if we've received a SIGHUP
-		#
 		load_config() if ($RELOAD);
 
 		my $t0 = time();
@@ -188,9 +162,6 @@ sub main_loop {
 
 			} else {
 				foreach my $proto (@PROTOCOLS) {
-					#
-					# spawn thread
-					#
 					$threads->{$ns}->{$proto} = threads->create(\&time_query, ($CONF->{'AddressFamily'}, $proto, @ips));
 				}
 			}
@@ -213,16 +184,10 @@ sub main_loop {
 			}
 		}
 
-		#
-		# update stats
-		#
 		update_stats() if (time() - $UPDATED >= $CONF->{'UpdateInterval'});
 
 		my $dt = (time() - $t0);
 
-		#
-		# sleep if we need to
-		#
 		sleep($CONF->{'Loop'}-$dt) if ($dt < $CONF->{'Loop'});
 	};
 }
@@ -244,9 +209,6 @@ sub time_query {
 		return undef;
 
 	} else {
-		#
-		# construct a resolver
-		#
 		my $resolver = Net::DNS::Resolver->new(
 			'nameservers'		=> \@ips,		# IP addresses to query
 			'retry'			=> 0,			# no retries
@@ -264,9 +226,6 @@ sub time_query {
 
 		my $t0 = time();
 
-		#
-		# send query inside an eval to catch errors
-		#
 		eval {
 			$result = $resolver->send($PACKET);
 		};
@@ -283,9 +242,6 @@ sub time_query {
 	}
 }
 
-#
-# emit debug message
-#
 sub debug {
 	my ($fmt, @args) = @_;
 	my $message = sprintf($fmt, @args);
@@ -293,16 +249,9 @@ sub debug {
 	print(STDERR $message."\n") if ($DEBUG);
 }
 
-#
-# load configuration, which may be at startup time, or in response
-# to a SIGHUP:
-#
 sub load_config {
 	debug('loading configuration from %s', $CFILE);
 
-	#
-	# get config from config file:
-	#
 	my $ini = Config::Simple->new('syntax' => 'simple');
 	$ini->read($CFILE);
 
@@ -333,7 +282,7 @@ sub load_config {
 	$CONF->{'StatsFile'}		= $ini->param('StatsFile')		|| undef;
 
 	#
-	# configure question packet
+	# pre-compile question packet
 	#
 	my @question = split(/\s+/, $CONF->{'Question'});
 	$PACKET = Net::DNS::Packet->new(@question);
@@ -342,10 +291,6 @@ sub load_config {
 	$RELOAD = undef;
 }
 
-#
-# generate list of servers, which may be at startup time, in response
-# to a SIGHUP, or because a DNS TTL has been reached:
-#
 sub update_serverlist {
 	$GROUPS = {};
 
@@ -358,10 +303,6 @@ sub update_serverlist {
 		@SERVERS = ('ARRAY' eq ref($CONF->{'Servers'}) ? @{$CONF->{'Servers'}} : split(/\s*,\s*/, $CONF->{'Servers'}));
 
 	} else {
-		#
-		# dynamic server list
-		#
-
 		@SERVERS = ();
 
 		my $resolver = Net::DNS::Resolver->new;
@@ -397,9 +338,6 @@ sub update_serverlist {
 	}
 }
 
-#
-# write stats to the database (and the stats file if configured)
-#
 sub update_stats {
 
 	my ($db, $sth);
@@ -448,9 +386,6 @@ sub update_stats {
 				$ptime = floor(1000 * $times[$pos]);
 			}
 
-			#
-			# insert into database
-			#
 			if ($sth) {
 				$sth->execute(
 					lc($CONF->{'NodeID'}),
@@ -470,9 +405,6 @@ sub update_stats {
 				);
 			}
 
-			#
-			# write line to file
-			#
 			if ($fh && $proto eq $CONF->{'Protocol'}) {
 				my $line = sprintf('%s %0.2f %d', $ns, $rate, $time);
 				$line .= sprintf(' %d', $ptime) if defined($ptime);
@@ -482,26 +414,17 @@ sub update_stats {
 		}
 	}
 
-	#
-	# commit changes
-	#
 	if ($db) {
 		$db->commit;
 		$db->disconnect;
 		debug("updated '%s'", $CONF->{'Database'});
 	}
 
-	#
-	# close file
-	#
 	if ($fh) {
 		$fh->close;
 		debug("wrote stats to '%s'", $CONF->{'StatsFile'});
 	}
 
-	#
-	# reset timer and stats
-	#
 	if ($db || $fh) {
 		$UPDATED = time();
 		$STATS = {};
@@ -553,16 +476,10 @@ sub initialise_database {
 }
 
 sub initialise_sqlite {
-	#
-	# initialise database connection
-	#
 	my $db = db_connect();
 
 	my $tbl = $db->quote_identifier($CONF->{'DBTable'});
 
-	#
-	# create table
-	#
 	$db->do(sprintf("CREATE TABLE IF NOT EXISTS %s (
 		`id`			INTEGER NOT NULL PRIMARY KEY,
 		`node_id`		VARCHAR(255) NOT NULL,
@@ -581,9 +498,6 @@ sub initialise_sqlite {
 		`percentile_time`	INTEGER UNSIGNED DEFAULT NULL
 	)", $tbl));
 
-	#
-	# create indexes
-	#
 	$db->do(sprintf('CREATE INDEX IF NOT EXISTS `node_idx`		ON %s(`node_id`)', $tbl));
 	$db->do(sprintf('CREATE INDEX IF NOT EXISTS `host_idx`		ON %s(`host`)', $tbl));
 	$db->do(sprintf('CREATE INDEX IF NOT EXISTS `group_idx`		ON %s(`group`)', $tbl));
@@ -600,16 +514,10 @@ sub initialise_sqlite {
 }
 
 sub initialise_mysql {
-	#
-	# initialise database connection
-	#
 	my $db = db_connect();
 
 	my $tbl = $db->quote_identifier($CONF->{'DBTable'});
 
-	#
-	# create table
-	#
 	$db->do(sprintf("CREATE TABLE IF NOT EXISTS %s (
 		`id`			BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
 		`node_id`		VARCHAR(255) NOT NULL,
@@ -628,9 +536,6 @@ sub initialise_mysql {
 		`percentile_time`	INTEGER UNSIGNED DEFAULT NULL
 	)", $tbl));
 
-	#
-	# create indexes
-	#
 	$db->do(sprintf('CREATE INDEX IF NOT EXISTS `node_idx`		ON %s(`node_id`)', $tbl));
 	$db->do(sprintf('CREATE INDEX IF NOT EXISTS `host_idx`		ON %s(`host`)', $tbl));
 	$db->do(sprintf('CREATE INDEX IF NOT EXISTS `group_idx`		ON %s(`group`)', $tbl));
