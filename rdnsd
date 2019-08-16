@@ -181,11 +181,16 @@ sub main_loop {
 			#
 			my @ips = resolve($ns, $CONF->{'AddressFamily'});
 
-			foreach my $proto (@PROTOCOLS) {
-				#
-				# spawn thread
-				#
-				$threads->{$ns}->{$proto} = threads->create(\&time_query, ($CONF->{'AddressFamily'}, $proto, @ips));
+			if (scalar(@ips) < 1) {
+				debug('unable to resolve %s', uc($ns));
+
+			} else {
+				foreach my $proto (@PROTOCOLS) {
+					#
+					# spawn thread
+					#
+					$threads->{$ns}->{$proto} = threads->create(\&time_query, ($CONF->{'AddressFamily'}, $proto, @ips));
+				}
 			}
 		}
 
@@ -218,11 +223,6 @@ sub main_loop {
 		#
 		sleep($CONF->{'Loop'}-$dt) if ($dt < $CONF->{'Loop'});
 	};
-
-	if ($@) {
-		chomp($@);
-		debug($@);
-	}
 }
 
 #
