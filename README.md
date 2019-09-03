@@ -55,8 +55,8 @@ The directives are explained below.
 
 Default: `$HOSTNAME`
 
-This value is insterted into the \`node\_id\` column of stats database. It
-disambiguates the source of each row, allowing data from multiple
+This value is insterted into the \`node\_id\` column of the stats database.
+It disambiguates the source of each row, allowing data from multiple
 monitoring nodes to be aggregated losslessly.
 
 If not set, the system's host name is used.
@@ -174,13 +174,13 @@ down if it does not respond within this amount of time. This value
 
 Default: `false`
 
-Enable recursion (i.e. set the \`rd\` bit on the queries sent to servers).
+Enable recursion (i.e. set the `rd` bit on the queries sent to servers).
 
 ## `Question QUESTION`
 
 Default: `example.com. IN A`
 
-Specify the DNS question. The format is "QNAME QCLASS QTYPE".
+Specify the DNS question. The format is `QNAME QCLASS QTYPE`.
 
 ## `ResponseCode RCODE`
 
@@ -194,9 +194,9 @@ accepted.
 
 Default: none
 
-Specify the servers to be checked. You can either specify a server name
-(which will be resolved to a set of IP addresses), or literal IPv4 or
-IPv6 addresses.
+A comma-separated list of servers to be checked. You can either specify
+a server name (which will be resolved to a set of IP addresses), or
+literal IPv4 or IPv6 addresses.
 
 This directive can't be used at the same time as the `Domains`
 directive.
@@ -247,9 +247,6 @@ to the database).
 Every `UpdateInterval` seconds, `rdnsd` will write stats to the
 database specified by `Database`, and, if set, the file specified by
 `StatsFile`.
-
-Once the database has been updated, `rdnsd`'s internal data is reset,
-so subsequent signals will produce fresh statistical data.
 
 ## LEGACY STATISTICS FILE FORMAT
 

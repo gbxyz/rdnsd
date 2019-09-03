@@ -684,8 +684,8 @@ The directives are explained below.
 
 Default: C<$HOSTNAME>
 
-This value is insterted into the `node_id` column of stats database. It
-disambiguates the source of each row, allowing data from multiple
+This value is insterted into the `node_id` column of the stats database.
+It disambiguates the source of each row, allowing data from multiple
 monitoring nodes to be aggregated losslessly.
 
 If not set, the system's host name is used.
@@ -826,13 +826,13 @@ B<MUST> be less than the value of C<Loop>.
 
 Default: C<false>
 
-Enable recursion (i.e. set the `rd` bit on the queries sent to servers).
+Enable recursion (i.e. set the C<rd> bit on the queries sent to servers).
 
 =head2 C<Question QUESTION>
 
 Default: C<example.com. IN A>
 
-Specify the DNS question. The format is "QNAME QCLASS QTYPE".
+Specify the DNS question. The format is C<QNAME QCLASS QTYPE>.
 
 =head2 C<ResponseCode RCODE>
 
@@ -846,9 +846,9 @@ accepted.
 
 Default: none
 
-Specify the servers to be checked. You can either specify a server name
-(which will be resolved to a set of IP addresses), or literal IPv4 or
-IPv6 addresses.
+A comma-separated list of servers to be checked. You can either specify
+a server name (which will be resolved to a set of IP addresses), or
+literal IPv4 or IPv6 addresses.
 
 This directive can't be used at the same time as the C<Domains>
 directive.
@@ -899,9 +899,6 @@ C<rdnsd> will reload its configuration if you send it a C<SIGHUP>:
 Every C<UpdateInterval> seconds, C<rdnsd> will write stats to the
 database specified by C<Database>, and, if set, the file specified by
 C<StatsFile>.
-
-Once the database has been updated, C<rdnsd>'s internal data is reset,
-so subsequent signals will produce fresh statistical data.
 
 =head2 LEGACY STATISTICS FILE FORMAT
 
