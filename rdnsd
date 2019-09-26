@@ -45,11 +45,11 @@ $CACHE = {};
 #
 # get config from command line:
 #
-exit(1) unless (GetOptions(
+GetOptions(
 	'config=s' => \$CFILE,
 	'debug'    => \$DEBUG,
 	'help'     => \$HELP,
-));
+);
 
 pod2usage('-verbose' => 99, '-sections' => 'USAGE|OPTIONS') if ($HELP);
 
