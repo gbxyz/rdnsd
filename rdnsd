@@ -530,7 +530,7 @@ sub initialise_mysql {
 		`proto`			CHAR(3) NOT NULL DEFAULT 'udp',
 		`count`			INTEGER UNSIGNED NOT NULL,
 		`success`		INTEGER UNSIGNED NOT NULL,
-		`rate`			DECIMAL UNSIGNED NOT NULL,
+		`rate`			DECIMAL(7,6) UNSIGNED NOT NULL,
 		`min_time`		INTEGER UNSIGNED NOT NULL,
 		`time`			INTEGER UNSIGNED NOT NULL,
 		`max_time`		INTEGER UNSIGNED NOT NULL,
