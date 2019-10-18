@@ -133,6 +133,11 @@ $SIG{'HUP'} = sub {
 	$REFRESH = 0;
 };
 
+#
+# USR1 handler - ignore
+#
+$SIG{'USR1'} = sub {};
+
 $UPDATED = time();
 
 $STATS = {};
